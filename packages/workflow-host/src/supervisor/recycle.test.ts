@@ -39,6 +39,7 @@ import {
   createMemoryNdjsonStream,
   createMockMailBus,
   parseTriggerFireRunIds,
+  readPayloadsOfType,
   createChangeNotifier,
   waitForTriggerFireRunIds,
   waitForUpstreamPayload,
@@ -54,6 +55,7 @@ import {
   createWorkflowSupervisor,
   StandbyAbandonedError,
   StandbyDeferredError,
+  StandbyNotIdleError,
   StandbyRefusedError,
   type InboxPrimitives,
   type MailBusBindings,
@@ -3832,8 +3834,11 @@ async function answerQuiet(
   child: FakeChild,
   childSender: ReturnType<typeof createControlChannelSender>,
   count: number,
-  answer: { ended: true } | { quiet: boolean; wakeAt?: string; error?: string },
-): Promise<{ wait: boolean }> {
+  answer:
+    | { ended: true }
+    | { quiet: true; quietForMs?: number; wakeAt?: string }
+    | { quiet: false; wakeAt?: string; error?: string },
+): Promise<{ wait: boolean; probe?: true }> {
   const queries = await waitForUpstreamPayloads(
     child.supervisorToChild,
     "quiet.request",
@@ -3841,9 +3846,25 @@ async function answerQuiet(
   );
   const query = queries[count - 1];
   if (query === undefined) throw new Error("quiet query missing");
+  const data =
+    "ended" in answer
+      ? { requestId: query.data.requestId, ended: true as const }
+      : answer.quiet
+        ? {
+            requestId: query.data.requestId,
+            quiet: true as const,
+            quietForMs: answer.quietForMs ?? 0,
+            ...(answer.wakeAt !== undefined ? { wakeAt: answer.wakeAt } : {}),
+          }
+        : {
+            requestId: query.data.requestId,
+            quiet: false as const,
+            ...(answer.wakeAt !== undefined ? { wakeAt: answer.wakeAt } : {}),
+            ...(answer.error !== undefined ? { error: answer.error } : {}),
+          };
   await childSender.send({
     type: "quiet.response",
-    data: { requestId: query.data.requestId, ...answer },
+    data,
   });
   return query.data;
 }
@@ -3858,7 +3879,8 @@ async function actAsChildEnteringStandby(
 ): Promise<void> {
   const first = opts.firstQuery ?? 1;
   const answer = {
-    quiet: true,
+    quiet: true as const,
+    quietForMs: 0,
     ...(opts.wakeAt !== undefined ? { wakeAt: opts.wakeAt } : {}),
   };
   expect((await answerQuiet(child, childSender, first, answer)).wait).toBe(
@@ -3926,6 +3948,7 @@ describe("supervisor standby and wake", () => {
       onStandbyWait?: WorkflowSupervisorBindings["onStandbyWait"];
       onShutdownWait?: WorkflowSupervisorBindings["onShutdownWait"];
       onDispatchWait?: WorkflowSupervisorBindings["onDispatchWait"];
+      onDispatchIdle?: WorkflowSupervisorBindings["onDispatchIdle"];
       onDispatchAnswerWait?: WorkflowSupervisorBindings["onDispatchAnswerWait"];
       parkedQueryWatchdogMs?: number;
       timers?: Pick<
@@ -3980,6 +4003,9 @@ describe("supervisor standby and wake", () => {
           : {}),
         ...(opts.onDispatchWait !== undefined
           ? { onDispatchWait: opts.onDispatchWait }
+          : {}),
+        ...(opts.onDispatchIdle !== undefined
+          ? { onDispatchIdle: opts.onDispatchIdle }
           : {}),
         ...(opts.onDispatchAnswerWait !== undefined
           ? { onDispatchAnswerWait: opts.onDispatchAnswerWait }
@@ -7406,6 +7432,377 @@ describe("supervisor standby and wake", () => {
     await expect(inStandby).rejects.toBeInstanceOf(StandbyRefusedError);
     expect(first.killSignals).toEqual([]);
     expect(tracker.totalSpawns).toBe(1);
+
+    await supervisor.shutdown();
+  });
+
+  // A conditional attempt or idle check refuses at once while the boot replay
+  // or a dispatch scan runs. The dispatch loop starts after the replay, so its
+  // first idle is when neither does.
+  async function setupQuiet(opts: Parameters<typeof setup>[0] = {}) {
+    const idle = Promise.withResolvers<undefined>();
+    const harness = await setup({
+      ...opts,
+      onDispatchIdle: () => {
+        idle.resolve(undefined);
+      },
+    });
+    await idle.promise;
+    return harness;
+  }
+
+  test("conditional enterStandby probes without waiting and reports quietForMs when not idle long enough", async () => {
+    const { supervisor, first, firstSender } = await setupQuiet();
+
+    const busy = supervisor.enterStandby({ minQuietMs: 10_000 });
+    const firstQuery = await answerQuiet(first, firstSender, 1, {
+      quiet: false,
+    });
+    expect(firstQuery).toMatchObject({ wait: false, probe: true });
+    const busyError = await busy.catch((cause: unknown) => cause);
+    expect(busyError).toBeInstanceOf(StandbyNotIdleError);
+    if (!(busyError instanceof StandbyNotIdleError))
+      throw new Error("expected StandbyNotIdleError");
+    expect(busyError.quietForMs).toBe(0);
+
+    const shortQuiet = supervisor.enterStandby({ minQuietMs: 10_000 });
+    const secondQuery = await answerQuiet(first, firstSender, 2, {
+      quiet: true,
+      quietForMs: 4_500,
+    });
+    expect(secondQuery).toMatchObject({ wait: false, probe: true });
+    const shortError = await shortQuiet.catch((cause: unknown) => cause);
+    expect(shortError).toBeInstanceOf(StandbyNotIdleError);
+    if (!(shortError instanceof StandbyNotIdleError))
+      throw new Error("expected StandbyNotIdleError");
+    expect(shortError.quietForMs).toBe(4_500);
+    expect(first.killSignals).toEqual([]);
+
+    await supervisor.shutdown();
+  });
+
+  test("conditional enterStandby stops the child once quiet for at least minQuietMs and returns immediately when already in standby", async () => {
+    const { supervisor, first, firstSender } = await setupQuiet();
+    const wakeAt = new Date(Date.now() + 3_600_000).toISOString();
+
+    const entering = supervisor.enterStandby({ minQuietMs: 10_000 });
+    expect(
+      await answerQuiet(first, firstSender, 1, {
+        quiet: true,
+        quietForMs: 10_000,
+      }),
+    ).toMatchObject({ wait: false, probe: true });
+    expect(
+      await answerQuiet(first, firstSender, 2, {
+        quiet: true,
+        quietForMs: 10_050,
+        wakeAt,
+      }),
+    ).toMatchObject({ wait: false });
+    await answerParkedQuery(first, firstSender, 2);
+    await waitForUpstreamPayload(first.supervisorToChild, "shutdown");
+    first.eventChildToSupervisor.close();
+    first.childToSupervisor.close();
+    first.resolveExit?.(0);
+    expect(await entering).toEqual({ wakeAt });
+
+    // A retry after the child stopped returns the recorded outcome without
+    // probing.
+    expect(await supervisor.enterStandby({ minQuietMs: 10_000 })).toEqual({
+      wakeAt,
+    });
+
+    await supervisor.shutdown();
+  });
+
+  test("an explicit enterStandby calls off a conditional attempt before its stop begins and defers until it settles, while a conditional attempt defers behind an explicit one", async () => {
+    const { supervisor, first, firstSender } = await setupQuiet();
+
+    const conditional = supervisor.enterStandby({ minQuietMs: 10_000 });
+    await waitForUpstreamPayloads(first.supervisorToChild, "quiet.request", 1);
+
+    // Explicit standby abandons the conditional attempt and defers instead of
+    // chaining a second attempt behind it, so a wake or retry cannot race a
+    // hidden queued attempt.
+    await expect(supervisor.enterStandby()).rejects.toBeInstanceOf(
+      StandbyDeferredError,
+    );
+    await expect(conditional).rejects.toBeInstanceOf(StandbyAbandonedError);
+
+    // A wake while nothing else is running leaves the child running with no
+    // follow-up standby started behind its back.
+    await supervisor.wake();
+    expect(first.killSignals).toEqual([]);
+
+    // Once the abandoned attempt has settled, the Hub's retry starts cleanly,
+    // and a new conditional attempt defers behind it.
+    const explicit = supervisor.enterStandby();
+    await waitForUpstreamPayloads(first.supervisorToChild, "quiet.request", 2);
+    await expect(
+      supervisor.enterStandby({ minQuietMs: 10_000 }),
+    ).rejects.toBeInstanceOf(StandbyDeferredError);
+
+    await actAsChildEnteringStandby(first, firstSender, { firstQuery: 2 });
+    expect(await explicit).toEqual({});
+
+    await supervisor.shutdown();
+  });
+
+  test("conditional enterStandby turns recordStandby failures into a plain StandbyRefusedError rather than StandbyNotIdleError", async () => {
+    const { supervisor, first, firstSender, tracker, ipcKeypair } =
+      await setupQuiet({
+        recordStandby: async () => {
+          throw new Error("disk full");
+        },
+      });
+
+    const entering = supervisor.enterStandby({ minQuietMs: 10_000 });
+    await answerQuiet(first, firstSender, 1, {
+      quiet: true,
+      quietForMs: 10_000,
+    });
+    await answerQuiet(first, firstSender, 2, {
+      quiet: true,
+      quietForMs: 10_000,
+    });
+    await answerParkedQuery(first, firstSender, 2);
+    await waitForUpstreamPayload(first.supervisorToChild, "shutdown");
+    first.eventChildToSupervisor.close();
+    first.childToSupervisor.close();
+    first.resolveExit?.(0);
+
+    const error = await entering.catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(StandbyRefusedError);
+    expect(error).not.toBeInstanceOf(StandbyNotIdleError);
+
+    await tracker.awaitChildren(2);
+    const second = tracker.children[1];
+    if (second === undefined) throw new Error("respawned child missing");
+    const secondSender = await driveReady(second, ipcKeypair);
+    await answerParkedQuery(second, secondSender, 1);
+    await supervisor.shutdown();
+  });
+
+  test("conditional enterStandby and checkIdle refuse with StandbyNotIdleError when the final check finds too little quiet time or inbox mail waits", async () => {
+    // What the next reads of the inbox find, before the real inbox answers.
+    let inboxReads: boolean[] = [];
+    const baseInbox = createMemoryInboxPrimitives();
+    const { supervisor, first, firstSender } = await setupQuiet({
+      inboxPrimitives: {
+        ...baseInbox,
+        hasInboxEntries: async (...args) =>
+          inboxReads.shift() ?? baseInbox.hasInboxEntries(...args),
+      },
+    });
+
+    // Probe passes (>= 10s), but the frozen final check reports less than 10s.
+    const finalShort = supervisor.enterStandby({ minQuietMs: 10_000 });
+    await answerQuiet(first, firstSender, 1, {
+      quiet: true,
+      quietForMs: 10_000,
+    });
+    await answerQuiet(first, firstSender, 2, {
+      quiet: true,
+      quietForMs: 3_000,
+    });
+    const shortError = await finalShort.catch((cause: unknown) => cause);
+    expect(shortError).toBeInstanceOf(StandbyNotIdleError);
+    if (!(shortError instanceof StandbyNotIdleError))
+      throw new Error("expected StandbyNotIdleError");
+    expect(shortError.quietForMs).toBe(3_000);
+
+    // Mail that reaches the inbox after the first check refuses at the stop
+    // as StandbyNotIdleError(0) without stopping the child.
+    inboxReads = [false, true];
+    const mailPending = supervisor.enterStandby({ minQuietMs: 10_000 });
+    await answerQuiet(first, firstSender, 3, {
+      quiet: true,
+      quietForMs: 10_000,
+    });
+    await answerQuiet(first, firstSender, 4, {
+      quiet: true,
+      quietForMs: 10_000,
+    });
+    await answerParkedQuery(first, firstSender, 2);
+    const mailError = await mailPending.catch((cause: unknown) => cause);
+    expect(mailError).toBeInstanceOf(StandbyNotIdleError);
+    if (!(mailError instanceof StandbyNotIdleError))
+      throw new Error("expected StandbyNotIdleError");
+    expect(mailError.quietForMs).toBe(0);
+    expect(first.killSignals).toEqual([]);
+
+    // Mail already waiting refuses the first check, and so an idle check,
+    // before anything is held back.
+    inboxReads = [true, true];
+    const waiting = supervisor.enterStandby({ minQuietMs: 10_000 });
+    await answerQuiet(first, firstSender, 5, {
+      quiet: true,
+      quietForMs: 10_000,
+    });
+    await expect(waiting).rejects.toBeInstanceOf(StandbyNotIdleError);
+    const checking = supervisor.checkIdle(10_000);
+    await answerQuiet(first, firstSender, 6, {
+      quiet: true,
+      quietForMs: 10_000,
+    });
+    await expect(checking).rejects.toBeInstanceOf(StandbyNotIdleError);
+    expect(
+      readPayloadsOfType(first.supervisorToChild.flushed(), "quiet.request"),
+    ).toHaveLength(6);
+
+    await supervisor.shutdown();
+  });
+
+  test("a conditional enterStandby shares an attempt with its own threshold and defers behind any other", async () => {
+    const { supervisor, first, firstSender } = await setupQuiet();
+
+    const attempt = supervisor.enterStandby({ minQuietMs: 1_000 });
+    await waitForUpstreamPayloads(first.supervisorToChild, "quiet.request", 1);
+
+    await expect(
+      supervisor.enterStandby({ minQuietMs: 60_000 }),
+    ).rejects.toBeInstanceOf(StandbyDeferredError);
+    await expect(
+      supervisor.enterStandby({ minQuietMs: 500 }),
+    ).rejects.toBeInstanceOf(StandbyDeferredError);
+    const sharing = supervisor.enterStandby({ minQuietMs: 1_000 });
+
+    await answerQuiet(first, firstSender, 1, { quiet: false });
+    await expect(attempt).rejects.toBeInstanceOf(StandbyNotIdleError);
+    await expect(sharing).rejects.toBeInstanceOf(StandbyNotIdleError);
+
+    await supervisor.shutdown();
+  });
+
+  test("an explicit enterStandby calls off a conditional attempt during its final check and while it asks what the child is parked on", async () => {
+    const { supervisor, first, firstSender } = await setupQuiet();
+
+    const checking = supervisor.enterStandby({ minQuietMs: 10_000 });
+    await answerQuiet(first, firstSender, 1, {
+      quiet: true,
+      quietForMs: 10_000,
+    });
+    await waitForUpstreamPayloads(first.supervisorToChild, "quiet.request", 2);
+    await expect(supervisor.enterStandby()).rejects.toBeInstanceOf(
+      StandbyDeferredError,
+    );
+    await expect(checking).rejects.toBeInstanceOf(StandbyAbandonedError);
+
+    const stopping = supervisor.enterStandby({ minQuietMs: 10_000 });
+    await answerQuiet(first, firstSender, 3, {
+      quiet: true,
+      quietForMs: 10_000,
+    });
+    await answerQuiet(first, firstSender, 4, {
+      quiet: true,
+      quietForMs: 10_000,
+    });
+    await waitForUpstreamPayloads(
+      first.supervisorToChild,
+      "parked-correlations.request",
+      2,
+    );
+    await expect(supervisor.enterStandby()).rejects.toBeInstanceOf(
+      StandbyDeferredError,
+    );
+    await answerParkedQuery(first, firstSender, 2);
+    await expect(stopping).rejects.toBeInstanceOf(StandbyAbandonedError);
+    expect(
+      readPayloadsOfType(first.supervisorToChild.flushed(), "shutdown"),
+    ).toEqual([]);
+    expect(first.killSignals).toEqual([]);
+
+    await supervisor.shutdown();
+  });
+
+  test("checkIdle reports whether the child has been quiet long enough and stops or holds back nothing", async () => {
+    const { supervisor, first, firstSender } = await setupQuiet();
+
+    const short = supervisor.checkIdle(10_000);
+    expect(
+      await answerQuiet(first, firstSender, 1, {
+        quiet: true,
+        quietForMs: 4_000,
+      }),
+    ).toMatchObject({ wait: false, probe: true });
+    const shortError = await short.catch((cause: unknown) => cause);
+    expect(shortError).toBeInstanceOf(StandbyNotIdleError);
+    if (!(shortError instanceof StandbyNotIdleError))
+      throw new Error("expected StandbyNotIdleError");
+    expect(shortError.quietForMs).toBe(4_000);
+
+    const busy = supervisor.checkIdle(10_000);
+    await answerQuiet(first, firstSender, 2, { quiet: false });
+    await expect(busy).rejects.toBeInstanceOf(StandbyNotIdleError);
+
+    const idle = supervisor.checkIdle(10_000);
+    await answerQuiet(first, firstSender, 3, {
+      quiet: true,
+      quietForMs: 10_000,
+    });
+    await idle;
+    // The check ends there: no final check and no stop.
+    expect(
+      readPayloadsOfType(first.supervisorToChild.flushed(), "quiet.request"),
+    ).toHaveLength(3);
+    expect(
+      readPayloadsOfType(first.supervisorToChild.flushed(), "shutdown"),
+    ).toEqual([]);
+    expect(first.killSignals).toEqual([]);
+
+    await supervisor.shutdown();
+  });
+
+  test("checkIdle and a conditional enterStandby refuse as not idle when the next timer is due within minQuietMs", async () => {
+    const { supervisor, first, firstSender } = await setupQuiet();
+    const soon = () => new Date(Date.now() + 5_000).toISOString();
+
+    const checking = supervisor.checkIdle(10_000);
+    await answerQuiet(first, firstSender, 1, {
+      quiet: true,
+      quietForMs: 10_000,
+      wakeAt: soon(),
+    });
+    const checkError = await checking.catch((cause: unknown) => cause);
+    expect(checkError).toBeInstanceOf(StandbyNotIdleError);
+    if (!(checkError instanceof StandbyNotIdleError))
+      throw new Error("expected StandbyNotIdleError");
+    expect(checkError.quietForMs).toBe(0);
+
+    // The final check applies the same rule, before anything is stopped.
+    const entering = supervisor.enterStandby({ minQuietMs: 10_000 });
+    await answerQuiet(first, firstSender, 2, {
+      quiet: true,
+      quietForMs: 10_000,
+    });
+    await answerQuiet(first, firstSender, 3, {
+      quiet: true,
+      quietForMs: 10_000,
+      wakeAt: soon(),
+    });
+    await expect(entering).rejects.toBeInstanceOf(StandbyNotIdleError);
+    expect(
+      readPayloadsOfType(first.supervisorToChild.flushed(), "shutdown"),
+    ).toEqual([]);
+    expect(first.killSignals).toEqual([]);
+
+    await supervisor.shutdown();
+  });
+
+  test("a standby attempt calls off a pending checkIdle, a check defers while one runs, and a child in standby is idle", async () => {
+    const { supervisor, first, firstSender } = await setupQuiet();
+
+    const pending = supervisor.checkIdle(10_000);
+    await waitForUpstreamPayloads(first.supervisorToChild, "quiet.request", 1);
+    const entering = supervisor.enterStandby();
+    await expect(pending).rejects.toBeInstanceOf(StandbyDeferredError);
+    await expect(supervisor.checkIdle(10_000)).rejects.toBeInstanceOf(
+      StandbyDeferredError,
+    );
+
+    await actAsChildEnteringStandby(first, firstSender, { firstQuery: 2 });
+    await entering;
+    await supervisor.checkIdle(10_000);
 
     await supervisor.shutdown();
   });

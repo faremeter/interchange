@@ -22,7 +22,7 @@ import {
   isRunAddress,
   parseRunAddress,
 } from "@intx/types";
-import type { GrantWalkSnapshot } from "@intx/types";
+import type { DistributiveOmit, GrantWalkSnapshot } from "@intx/types";
 import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
 import { type } from "arktype";
 import {
@@ -200,6 +200,22 @@ export class WorkflowControlRejectedError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "WorkflowControlRejectedError";
+  }
+}
+
+/**
+ * A conditional standby command or idle check (`minQuietMs`) was refused
+ * because the child has not been quiet long enough yet, input still waits for
+ * it, the run ended, the attempt was abandoned, or the child ran again before
+ * the answer. `quietForMs` is how long the child had been quiet (0 in all
+ * cases except a quiet child below `minQuietMs`).
+ */
+export class WorkflowControlNotIdleError extends WorkflowControlRejectedError {
+  readonly quietForMs: number;
+  constructor(message: string, quietForMs: number) {
+    super(message);
+    this.name = "WorkflowControlNotIdleError";
+    this.quietForMs = quietForMs;
   }
 }
 
@@ -493,10 +509,17 @@ export type AllocatedSidecarTarget = {
   readonly generation: number;
 };
 
-type WorkflowControlCommand = Omit<
+type WorkflowControlFramePayload = DistributiveOmit<
   WorkflowControlFrame,
-  "type" | "requestId" | "generation" | "action"
-> & { action: "cancel" | "stop" };
+  "type" | "requestId" | "generation"
+>;
+
+type WorkflowControlCommand = {
+  runId: string;
+  agentAddress: string;
+  action: "cancel" | "stop";
+  reason: string;
+};
 
 // What an acknowledged workflow control carries back to its caller.
 type WorkflowControlResult = {
@@ -542,6 +565,32 @@ export type SidecarAllocationRouter = {
     onAnswered?: () => void,
   ): Promise<{ readonly wakeAt?: string }>;
   /**
+   * Put the deployment's workflow child in standby only if every run has been
+   * quiet for at least `minQuietMs` milliseconds with no timer due within it
+   * (or the child is already in standby). Rejects with
+   * `WorkflowControlNotIdleError` carrying `quietForMs` when the child is busy,
+   * has not waited long enough yet, or has a timer due too soon. Unlike
+   * `putAllocationInStandby`, `timeoutMs` bounds the whole attempt, which a
+   * slow one can outlive. That attempt runs on at the sidecar, and a repeat of
+   * this call shares it or the standby it reached.
+   */
+  putAllocationInStandbyIfIdle(
+    target: AllocatedSidecarTarget,
+    minQuietMs: number,
+    timeoutMs: number,
+    onAnswered?: () => void,
+  ): Promise<{ readonly wakeAt?: string }>;
+  /**
+   * Ask whether `putAllocationInStandbyIfIdle` would go on to stop the child,
+   * without stopping or holding back anything. Rejects with
+   * `WorkflowControlNotIdleError` as that command would.
+   */
+  checkAllocationIdle(
+    target: AllocatedSidecarTarget,
+    minQuietMs: number,
+    timeoutMs: number,
+  ): Promise<void>;
+  /**
    * Abandon a standby request in progress, or run a workflow child
    * in standby again. `onAnswered` runs as for `putAllocationInStandby`.
    */
@@ -550,6 +599,14 @@ export type SidecarAllocationRouter = {
     timeoutMs: number,
     onAnswered?: () => void,
   ): Promise<void>;
+  /**
+   * Allocations this Hub holds a live, routed connection for and has not
+   * stopped.
+   */
+  getIdleStandbyCandidates(): readonly (AllocatedSidecarTarget & {
+    readonly sidecarId: string;
+    readonly runId: string;
+  })[];
   /** Concurrent callers share the existing request and its deadline. */
   retainAllocation(
     target: AllocatedSidecarTarget,
@@ -4769,6 +4826,32 @@ export function createSidecarRouter(
     return { capacity: conn.capacity, retainedIncarnations };
   }
 
+  function getIdleStandbyCandidates() {
+    const candidates: (AllocatedSidecarTarget & {
+      sidecarId: string;
+      runId: string;
+    })[] = [];
+    for (const [allocationId, current] of allocatedConnections) {
+      const conn = connections.get(current.ws);
+      if (
+        current.identity.kind !== "allocated" ||
+        !isFencedAsCurrent(current.identity) ||
+        conn?.bindings.get(allocationId) !== current.identity ||
+        conn.workflowAddresses.get(current.identity.workflowRunAddress) !==
+          allocationId
+      )
+        continue;
+      const target = { allocationId, generation: current.identity.generation };
+      if (stoppedAllocations.get(allocationId) === target.generation) continue;
+      candidates.push({
+        ...target,
+        sidecarId: current.identity.sidecarId,
+        runId: current.identity.anchorRunId,
+      });
+    }
+    return candidates;
+  }
+
   function getRetentionCandidates() {
     const candidates: (AllocatedSidecarTarget & { sidecarId: string })[] = [];
     for (const [allocationId, current] of allocatedConnections) {
@@ -5509,7 +5592,11 @@ export function createSidecarRouter(
       fail(
         frame.error === WORKFLOW_CONTROL_INITIALIZING_ERROR
           ? new WorkflowControlInitializingError()
-          : new WorkflowControlRejectedError(frame.error),
+          : frame.quietForMs !== undefined &&
+              (entry.meta.action === "standby-if-idle" ||
+                entry.meta.action === "idle-check")
+            ? new WorkflowControlNotIdleError(frame.error, frame.quietForMs)
+            : new WorkflowControlRejectedError(frame.error),
       );
     else {
       if (entry.meta.action === "retain") {
@@ -5527,10 +5614,13 @@ export function createSidecarRouter(
         connectionRetention.set(ws, retained);
         removeRoute(ws, entry.meta.agentAddress);
       }
+      const isStandby =
+        entry.meta.action === "standby" ||
+        entry.meta.action === "standby-if-idle";
       if (
         entry.meta.action === "stop" ||
         entry.meta.action === "retain" ||
-        entry.meta.action === "standby"
+        isStandby
       ) {
         // A live stop or a standby request waits for the worker's tips.
         // Terminal controls follow the admission cutoff instead: later history
@@ -5595,7 +5685,7 @@ export function createSidecarRouter(
           );
           return;
         }
-        if (entry.meta.action !== "standby") {
+        if (!isStandby) {
           stoppedAllocations.set(
             entry.meta.allocationId,
             entry.meta.generation,
@@ -5607,7 +5697,7 @@ export function createSidecarRouter(
         ...(entry.meta.action === "retain" && frame.retention !== undefined
           ? { retention: frame.retention }
           : {}),
-        ...(entry.meta.action === "standby" && frame.wakeAt !== undefined
+        ...(isStandby && frame.wakeAt !== undefined
           ? { wakeAt: frame.wakeAt }
           : {}),
       });
@@ -5733,11 +5823,44 @@ export function createSidecarRouter(
     timeoutMs: number,
     onAnswered?: () => void,
   ): Promise<{ readonly wakeAt?: string }> {
-    const result = await sendStandbyControl(target, "standby", timeoutMs, {
-      untilAnswered: true,
-      ...(onAnswered !== undefined ? { onAnswered } : {}),
-    });
+    const result = await sendStandbyControl(
+      target,
+      { action: "standby" },
+      timeoutMs,
+      {
+        untilAnswered: true,
+        ...(onAnswered !== undefined ? { onAnswered } : {}),
+      },
+    );
     return result.wakeAt === undefined ? {} : { wakeAt: result.wakeAt };
+  }
+
+  async function putAllocationInStandbyIfIdle(
+    target: AllocatedSidecarTarget,
+    minQuietMs: number,
+    timeoutMs: number,
+    onAnswered?: () => void,
+  ): Promise<{ readonly wakeAt?: string }> {
+    const result = await sendStandbyControl(
+      target,
+      { action: "standby-if-idle", minQuietMs },
+      timeoutMs,
+      onAnswered !== undefined ? { onAnswered } : {},
+    );
+    return result.wakeAt === undefined ? {} : { wakeAt: result.wakeAt };
+  }
+
+  async function checkAllocationIdle(
+    target: AllocatedSidecarTarget,
+    minQuietMs: number,
+    timeoutMs: number,
+  ): Promise<void> {
+    await sendStandbyControl(
+      target,
+      { action: "idle-check", minQuietMs },
+      timeoutMs,
+      {},
+    );
   }
 
   async function wakeAllocation(
@@ -5747,7 +5870,7 @@ export function createSidecarRouter(
   ): Promise<void> {
     await sendStandbyControl(
       target,
-      "wake",
+      { action: "wake" },
       timeoutMs,
       onAnswered !== undefined ? { onAnswered } : {},
     );
@@ -5759,10 +5882,17 @@ export function createSidecarRouter(
   // answer.
   async function sendStandbyControl(
     target: AllocatedSidecarTarget,
-    action: "standby" | "wake",
+    control:
+      | { action: "standby" }
+      | { action: "standby-if-idle" | "idle-check"; minQuietMs: number }
+      | { action: "wake" },
     timeoutMs: number,
-    opts: { untilAnswered?: boolean; onAnswered?: () => void },
+    opts: {
+      untilAnswered?: boolean;
+      onAnswered?: () => void;
+    },
   ): Promise<WorkflowControlResult> {
+    const { action } = control;
     const key = `${target.allocationId}:${String(target.generation)}`;
     const previous = standbySends.get(key) ?? Promise.resolve();
     const sent = Promise.withResolvers<undefined>();
@@ -5772,53 +5902,75 @@ export function createSidecarRouter(
     try {
       await previous;
       const connection = await routingConnection(target);
-      // Sent under the anchor lock, so a wake never starts a child whose run
-      // a cancellation or expiry already ended.
-      await withAllocationWorkAdmission(
-        connection.ws,
-        connection.binding,
-        () => {
-          // The connection can have closed since the lookup, and its close
-          // sweep never finds a request registered after it.
-          const held = allocatedConnections.get(target.allocationId);
-          if (
-            held?.ws !== connection.ws ||
-            held.identity.generation !== target.generation ||
-            connections.get(connection.ws) !== connection.conn ||
-            connection.conn.bindings.get(target.allocationId) !==
-              connection.binding ||
-            allocationFences.get(target.allocationId)?.generation !==
-              target.generation
-          ) {
-            throw new WorkflowControlUnreachableError(
-              `Allocated sidecar connection changed for allocation ${target.allocationId}`,
-            );
-          }
-          answer = sendWorkflowControlOnConnection(
-            connection,
-            target,
-            {
-              runId: connection.binding.anchorRunId,
-              agentAddress: connection.binding.workflowRunAddress,
-              action,
-              reason:
-                action === "standby"
-                  ? "Put the deployment's workflow child in standby"
-                  : "Wake the deployment's workflow child",
-            },
-            timeoutMs,
-            { terminal: false, ...opts },
+      const sendOnConnection = (): true => {
+        // The connection can have closed since the lookup, and its close
+        // sweep never finds a request registered after it.
+        const held = allocatedConnections.get(target.allocationId);
+        if (
+          held?.ws !== connection.ws ||
+          held.identity.generation !== target.generation ||
+          connections.get(connection.ws) !== connection.conn ||
+          connection.conn.bindings.get(target.allocationId) !==
+            connection.binding ||
+          allocationFences.get(target.allocationId)?.generation !==
+            target.generation
+        ) {
+          throw new WorkflowControlUnreachableError(
+            `Allocated sidecar connection changed for allocation ${target.allocationId}`,
           );
-          // Own an early rejection while the admission transaction ends.
-          void answer.catch(() => undefined);
-          return true;
-        },
-      ).catch((cause: unknown) => {
-        // The lock only orders the send against a cancellation or expiry, so
-        // once the frame is out its answer stands.
-        if (answer === undefined) throw cause;
-        logger.warn`Workflow ${action} for allocation ${target.allocationId} was sent, but its admission did not end cleanly: ${cause instanceof Error ? cause.message : String(cause)}`;
-      });
+        }
+        const command: WorkflowControlFramePayload =
+          control.action === "standby-if-idle" ||
+          control.action === "idle-check"
+            ? {
+                runId: connection.binding.anchorRunId,
+                agentAddress: connection.binding.workflowRunAddress,
+                action: control.action,
+                minQuietMs: control.minQuietMs,
+                reason:
+                  control.action === "idle-check"
+                    ? "Check whether the deployment's runs have waited long enough for standby"
+                    : "Put the deployment's workflow child in standby if its runs have waited long enough",
+              }
+            : {
+                runId: connection.binding.anchorRunId,
+                agentAddress: connection.binding.workflowRunAddress,
+                action: control.action,
+                reason:
+                  control.action === "wake"
+                    ? "Wake the deployment's workflow child"
+                    : "Put the deployment's workflow child in standby",
+              };
+        answer = sendWorkflowControlOnConnection(
+          connection,
+          target,
+          command,
+          timeoutMs,
+          { terminal: false, ...opts },
+        );
+        // Own an early rejection until the caller awaits `answer`.
+        void answer.catch(() => undefined);
+        return true;
+      };
+      if (action === "standby-if-idle" || action === "idle-check") {
+        // The anchor lock orders a wake against a cancellation. Neither of
+        // these can start a child, and both go out on every check, so they
+        // do not take it.
+        sendOnConnection();
+      } else {
+        // Sent under the anchor lock, so a wake never starts a child whose run
+        // a cancellation or expiry already ended.
+        await withAllocationWorkAdmission(
+          connection.ws,
+          connection.binding,
+          sendOnConnection,
+        ).catch((cause: unknown) => {
+          // The lock only orders the send against a cancellation or expiry, so
+          // once the frame is out its answer stands.
+          if (answer === undefined) throw cause;
+          logger.warn`Workflow ${action} for allocation ${target.allocationId} was sent, but its admission did not end cleanly: ${cause instanceof Error ? cause.message : String(cause)}`;
+        });
+      }
       if (answer === undefined)
         throw new Error(`Workflow ${action} was not sent`);
     } finally {
@@ -5899,7 +6051,7 @@ export function createSidecarRouter(
 
   async function requestWorkflowControl(
     target: AllocatedSidecarTarget,
-    command: Omit<WorkflowControlFrame, "type" | "requestId" | "generation">,
+    command: WorkflowControlFramePayload,
     timeoutMs: number,
   ): Promise<WorkflowControlResult> {
     return sendWorkflowControlOnConnection(
@@ -5914,7 +6066,7 @@ export function createSidecarRouter(
   function sendWorkflowControlOnConnection(
     connection: Awaited<ReturnType<typeof getAllocatedConnection>>,
     target: AllocatedSidecarTarget,
-    command: Omit<WorkflowControlFrame, "type" | "requestId" | "generation">,
+    command: WorkflowControlFramePayload,
     timeoutMs: number,
     {
       terminal,
@@ -6366,7 +6518,10 @@ export function createSidecarRouter(
     getCleanupConnection,
     sendWorkflowControl,
     putAllocationInStandby,
+    putAllocationInStandbyIfIdle,
+    checkAllocationIdle,
     wakeAllocation,
+    getIdleStandbyCandidates,
     retainAllocation,
     getAllocationRetention,
     getRetentionCandidates,

@@ -597,6 +597,62 @@ describe("sidecar↔hub integration", () => {
     }
   });
 
+  test("serializes a standby-if-idle notIdle outcome with error and quietForMs on workflow.control.ack", async () => {
+    const hello = Promise.withResolvers<undefined>();
+    const acknowledged = Promise.withResolvers<SidecarFrame>();
+    const hub = startWelcomingHub((raw) => {
+      const frame = SidecarFrame.assert(JSON.parse(raw));
+      if (frame.type === "hello") hello.resolve(undefined);
+      if (
+        frame.type === "workflow.control.ack" &&
+        frame.requestId === "standby-if-idle-1"
+      )
+        acknowledged.resolve(frame);
+    });
+    const bindings = withTestDeployBindings();
+    const client = createHubLink({
+      capacity: DEFAULT_SIDECAR_CAPACITY,
+      hubURL: `ws://localhost:${hub.server.port}/ws`,
+      sidecarId: "standby-if-idle",
+      token: "test-token",
+      transport: createInMemoryTransport(),
+      sessions: createMockSessionManager(),
+      ...bindings,
+      deployRouter: {
+        ...bindings.deployRouter,
+        control: async () => ({
+          notIdle: {
+            reason: "The deployment was not put in standby: still busy",
+            quietForMs: 4_567.9,
+          },
+        }),
+      },
+    });
+    try {
+      client.connect();
+      await hello.promise;
+      hub.send({
+        type: "workflow.control",
+        requestId: "standby-if-idle-1",
+        action: "standby-if-idle",
+        minQuietMs: 10_000,
+        runId: "run_idle",
+        agentAddress: "run_idle@example.test",
+        generation: 1,
+        reason: "Put in standby if idle",
+      });
+      expect(await acknowledged.promise).toEqual({
+        type: "workflow.control.ack",
+        requestId: "standby-if-idle-1",
+        error: "The deployment was not put in standby: still busy",
+        quietForMs: 4_567,
+      });
+    } finally {
+      client.close();
+      await hub.server.stop(true);
+    }
+  });
+
   test("a cancellation finishing after reconnect does not reply on the new connection, and learns its connection closed", async () => {
     const sockets: TestSocket[] = [];
     const stopped = Promise.withResolvers<undefined>();

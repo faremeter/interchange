@@ -18,6 +18,7 @@
 // method fails with `SERVERBUG` "not wired". A spawned child has no inbox
 // surface, and that failure is the wiring error, not a mailbox policy.
 
+import type { DistributiveOmit } from "@intx/types";
 import { base64Decode } from "@intx/types/base64";
 import { deriveWorkflowRunId } from "@intx/types/workflow-run-id";
 import type {
@@ -61,10 +62,6 @@ export interface SupervisorBackedTransportInbound {
 }
 
 type MailboxCall = Parameters<ChildMailboxCallBridge["submit"]>[0];
-
-type DistributiveOmit<T, K extends PropertyKey> = T extends unknown
-  ? Omit<T, K>
-  : never;
 
 type WireSearchQuery = Extract<MailboxCall, { op: "search" }>["query"];
 

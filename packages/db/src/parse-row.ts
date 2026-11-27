@@ -16,12 +16,12 @@ import {
   TenantConfig,
   WorkflowLifecyclePolicy,
   workflowDefinitionStatuses,
-  workflowStandbyStates,
   workflowDefinitionVersionStatuses,
 } from "@intx/types";
 import { WireGrantRule } from "@intx/types/grant-wire";
 import { FrozenApprovalBundle } from "@intx/types/sidecar";
 import { RepoAction } from "@intx/types/repo";
+import { storedWorkflowStandbyStates } from "./schema/workflow-run";
 import { workflowRunDispatchStatuses } from "./schema/workflow-run-dispatch";
 
 import type {
@@ -77,7 +77,9 @@ const workflowRunStatuses = [
   "cancelled",
 ] as const;
 const WorkflowRunStatusValidator = type.enumerated(...workflowRunStatuses);
-const WorkflowStandbyStateValidator = type.enumerated(...workflowStandbyStates);
+const WorkflowStandbyStateValidator = type.enumerated(
+  ...storedWorkflowStandbyStates,
+);
 const WorkflowRunDispatchStatusValidator = type.enumerated(
   ...workflowRunDispatchStatuses,
 );
@@ -221,6 +223,12 @@ export function parseSignalCorrelationRow(
   };
 }
 
+export function parseWorkflowRunLifecyclePolicy(
+  raw: unknown,
+): WorkflowLifecyclePolicy | null {
+  return raw == null ? null : WorkflowLifecyclePolicy.assert(raw);
+}
+
 export function parseWorkflowRunRow(row: typeof workflowRun.$inferSelect) {
   return {
     ...row,
@@ -229,10 +237,7 @@ export function parseWorkflowRunRow(row: typeof workflowRun.$inferSelect) {
       row.standbyState === null
         ? null
         : WorkflowStandbyStateValidator.assert(row.standbyState),
-    lifecyclePolicy:
-      row.lifecyclePolicy == null
-        ? null
-        : WorkflowLifecyclePolicy.assert(row.lifecyclePolicy),
+    lifecyclePolicy: parseWorkflowRunLifecyclePolicy(row.lifecyclePolicy),
     modelPreferences:
       row.modelPreferences !== null
         ? InvokerModelPreferences.assert(row.modelPreferences)

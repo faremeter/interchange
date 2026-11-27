@@ -6,6 +6,7 @@ import {
   clampWorkflowLifecyclePolicy,
   resolveWorkflowLifecyclePolicy,
   type ResolvedWorkflowLifecyclePolicy,
+  type WorkflowLifecycleDefaults,
 } from "@intx/types";
 
 import type { DB, DBExecutor } from "./client";
@@ -189,14 +190,15 @@ export async function validateLifecyclePolicyEdit(
 }
 
 /**
- * `defaults` fills fields no tenant or installed workflow sets. Unlike a
- * tenant value it is not a ceiling, so either level may set a longer duration.
+ * `defaults` fills the fields it has when no tenant or installed workflow
+ * sets them; `standbyAfter` has no default. Unlike a tenant value it is not a
+ * ceiling, so either level may set a longer duration.
  */
 export async function resolveDeploymentLifecyclePolicy(
   db: DBExecutor,
   tenantId: string,
   definitionId: string,
-  defaults: ResolvedWorkflowLifecyclePolicy,
+  defaults: WorkflowLifecycleDefaults,
 ): Promise<ResolvedWorkflowLifecyclePolicy> {
   const policies = await loadTenantLifecyclePolicies(db, tenantId);
   const [definition] = await db
@@ -214,6 +216,9 @@ export async function resolveDeploymentLifecyclePolicy(
   return {
     maxLifetime: policy.maxLifetime ?? defaults.maxLifetime,
     maxDisconnected: policy.maxDisconnected ?? defaults.maxDisconnected,
+    ...(policy.standbyAfter !== undefined
+      ? { standbyAfter: policy.standbyAfter }
+      : {}),
     capacityRetention: {
       ...defaults.capacityRetention,
       ...policy.capacityRetention,

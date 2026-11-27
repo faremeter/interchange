@@ -407,6 +407,12 @@ export interface WorkflowSupervisorBindings {
    */
   onDispatchWait?: (runId: string) => void;
   /**
+   * Test seam, unset in production. Called each time the dispatch loop finds
+   * nothing to hand over and waits for mail. The loop's first pass comes
+   * after the boot replay.
+   */
+  onDispatchIdle?: () => void;
+  /**
    * Test seam, unset in production. Called when the dispatch waits for the
    * child to say whether it committed a signal it was sent.
    */

@@ -17,9 +17,20 @@ let delivering = 0;
 // Every start of work or of a delivery, so a check can tell that something
 // began since it last looked, even work that has already ended again.
 let starts = 0;
+// When this process last went quiet after working, on the monotonic clock. A
+// process that has not worked yet has been quiet since it loaded.
+let quietSince = performance.now();
+// Whether anything has worked since then. A delivery no run acts on, such as
+// a log update a waiting run was not waiting for, is not work, so the quiet
+// time runs on across it.
+let workedSinceQuiet = false;
 const waiters = new Set<() => void>();
 
 function lowered(): void {
+  if (isQuiet() && workedSinceQuiet) {
+    quietSince = performance.now();
+    workedSinceQuiet = false;
+  }
   for (const wake of [...waiters]) wake();
 }
 
@@ -46,6 +57,7 @@ function until(settled: () => boolean, signal?: AbortSignal): Promise<void> {
 export function beginWork(): () => void {
   working += 1;
   starts += 1;
+  workedSinceQuiet = true;
   let released = false;
   return () => {
     if (released) return;
@@ -72,6 +84,7 @@ export async function waitIdle<T>(
     resumed = true;
     working += 1;
     starts += 1;
+    workedSinceQuiet = true;
   };
   try {
     const waiting = wait(resume);
@@ -144,6 +157,15 @@ export function activityStarts(): number {
 /** Whether nothing in this process works or delivers input. */
 export function isQuiet(): boolean {
   return working === 0 && delivering === 0;
+}
+
+/**
+ * How many milliseconds no run loop or step in this process has worked, and
+ * 0 while something works or delivers input. A delivery no run acted on does
+ * not start the count over.
+ */
+export function quietFor(): number {
+  return isQuiet() ? performance.now() - quietSince : 0;
 }
 
 /** Whether a run loop or a step in this process is working. */

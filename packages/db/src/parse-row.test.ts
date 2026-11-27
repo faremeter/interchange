@@ -10,6 +10,7 @@ import {
   parsePrincipalRow,
   parseWorkflowDefinitionRow,
   parseWorkflowDefinitionVersionRow,
+  parseWorkflowRunLifecyclePolicy,
   parseWorkflowRunRow,
 } from "./parse-row";
 import type {
@@ -365,11 +366,27 @@ describe("parseWorkflowRunRow", () => {
       parseWorkflowRunRow(makeWorkflowRunRow({ standbyState: "standby" }))
         .standbyState,
     ).toBe("standby");
+    expect(
+      parseWorkflowRunRow(makeWorkflowRunRow({ standbyState: "confirming" }))
+        .standbyState,
+    ).toBe("confirming");
     // The column is plain text, so a row can hold any string.
     expect(() =>
       parseWorkflowRunRow(
         Object.assign(makeWorkflowRunRow(), { standbyState: "stopped" }),
       ),
+    ).toThrow();
+  });
+});
+
+describe("parseWorkflowRunLifecyclePolicy", () => {
+  test("returns null for a missing policy and rejects an invalid duration", () => {
+    expect(parseWorkflowRunLifecyclePolicy(null)).toBeNull();
+    expect(parseWorkflowRunLifecyclePolicy({ standbyAfter: "5m" })).toEqual({
+      standbyAfter: "5m",
+    });
+    expect(() =>
+      parseWorkflowRunLifecyclePolicy({ standbyAfter: "not-a-duration" }),
     ).toThrow();
   });
 });

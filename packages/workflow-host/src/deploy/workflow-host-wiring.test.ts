@@ -2729,7 +2729,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       async answerQuiet(
         index: number,
         count: number,
-        answer: { quiet: boolean; ended?: true },
+        answer: { quiet: boolean; quietForMs?: number; ended?: true },
       ): Promise<void> {
         const spawn = spawns[index];
         const sender = spawn?.childSender;
@@ -2748,12 +2748,39 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         if (query === undefined) throw new Error("quiet query missing");
         await sender.send({
           type: "quiet.response",
-          data: { requestId: query.data.requestId, ...answer },
+          data:
+            answer.ended === true
+              ? { requestId: query.data.requestId, ended: true }
+              : answer.quiet
+                ? {
+                    requestId: query.data.requestId,
+                    quiet: true,
+                    quietForMs: answer.quietForMs ?? 0,
+                  }
+                : {
+                    requestId: query.data.requestId,
+                    quiet: false,
+                  },
         });
       },
-      // Answer a standby attempt as the real child does: quiet for the wait and
-      // the final check, no parked correlations, then exit on `shutdown`.
-      async putChildInStandby(index: number): Promise<void> {
+      async waitForQuietRequest(index: number, count: number): Promise<void> {
+        const spawn = spawns[index];
+        if (spawn === undefined) {
+          throw new Error(`spawn ${String(index)} missing`);
+        }
+        await waitForUpstreamPayloads(
+          spawn.supervisorToChild,
+          "quiet.request",
+          count,
+        );
+      },
+      // Answer a standby attempt as the real child does: quiet for the first
+      // check and the final one, no parked correlations, then exit on
+      // `shutdown`.
+      async putChildInStandby(
+        index: number,
+        opts: { quietForMs?: number } = {},
+      ): Promise<void> {
         const spawn = spawns[index];
         const sender = spawn?.childSender;
         if (spawn === undefined || sender === undefined) {
@@ -2772,7 +2799,11 @@ describe("createSidecarDeployRouter multi-step branch", () => {
           if (query === undefined) throw new Error("quiet query missing");
           await sender.send({
             type: "quiet.response",
-            data: { requestId: query.data.requestId, quiet: true },
+            data: {
+              requestId: query.data.requestId,
+              quiet: true,
+              quietForMs: opts.quietForMs ?? 0,
+            },
           });
         }
         // The first correlation query is the one the child's start asks.
@@ -3290,6 +3321,155 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       expect(spawned.spawnCount()).toBe(1);
     },
   );
+
+  // A conditional attempt or idle check refuses at once while the supervisor's
+  // boot replay or a dispatch scan runs, and nothing here reports those
+  // ending, so this asks until one reaches the child.
+  async function askOnceQuiet(
+    deployed: Awaited<ReturnType<typeof deployForStandby>>,
+    head: string,
+    action: "standby-if-idle" | "idle-check",
+    signal?: AbortSignal,
+  ) {
+    const control = deployed.router.control;
+    if (control === undefined) throw new Error("router.control is undefined");
+    const probed = deployed.spawned
+      .waitForQuietRequest(0, 1)
+      .then(() => "probed" as const);
+    for (let asked = 1; ; asked += 1) {
+      const outcome = control(
+        {
+          type: "workflow.control",
+          requestId: `${action}-${String(asked)}`,
+          agentAddress: head,
+          generation: deployed.frame.generation,
+          runId: deriveWorkflowRunId(head),
+          action,
+          minQuietMs: 10_000,
+          reason: "Check idle",
+        },
+        signal !== undefined ? { signal } : undefined,
+      );
+      // Wrapped, since returning the promise itself would wait on it.
+      if ((await Promise.race([outcome, probed])) === "probed")
+        return { outcome };
+      expect(await outcome).toEqual({
+        notIdle: {
+          reason: expect.stringContaining("the deployment is busy"),
+          quietForMs: 0,
+        },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  }
+
+  test("idle-check answers not idle with quietForMs or idle, and leaves the child running", async () => {
+    const head = "run_idlecheck@example.com";
+    const deployed = await deployForStandby(head, 9210, async () => ({
+      "refs/heads/main": "a".repeat(40),
+    }));
+    const short = await askOnceQuiet(deployed, head, "idle-check");
+    await deployed.spawned.answerQuiet(0, 1, {
+      quiet: true,
+      quietForMs: 4_200,
+    });
+    expect(await short.outcome).toEqual({
+      notIdle: {
+        reason: expect.stringContaining("not waited long enough"),
+        quietForMs: 4_200,
+      },
+    });
+
+    const control = deployed.router.control;
+    if (control === undefined) throw new Error("router.control is undefined");
+    const idle = control({
+      type: "workflow.control",
+      requestId: "idle-check-idle",
+      agentAddress: head,
+      generation: deployed.frame.generation,
+      runId: deriveWorkflowRunId(head),
+      action: "idle-check",
+      minQuietMs: 10_000,
+      reason: "Check idle",
+    });
+    await deployed.spawned.answerQuiet(0, 2, {
+      quiet: true,
+      quietForMs: 10_000,
+    });
+    expect(await idle).toEqual({});
+    const incarnation = deployed.router
+      .incarnations()
+      .find((candidate) => candidate.address === head);
+    expect(incarnation?.state).toBe("live");
+    expect(incarnation?.inStandby).toBeUndefined();
+  });
+
+  test("standby-if-idle maps not-idle, abandoned, and ran-again-before-answer into notIdle outcomes", async () => {
+    {
+      const head = "run_standbyifidleshort@example.com";
+      const deployed = await deployForStandby(head, 9198, async () => ({
+        "refs/heads/main": "a".repeat(40),
+      }));
+      const { outcome } = await askOnceQuiet(deployed, head, "standby-if-idle");
+      await deployed.spawned.answerQuiet(0, 1, {
+        quiet: true,
+        quietForMs: 4_200,
+      });
+      expect(await outcome).toEqual({
+        notIdle: {
+          reason: expect.stringContaining("not waited long enough"),
+          quietForMs: 4_200,
+        },
+      });
+    }
+
+    {
+      const head = "run_standbyifidleabort@example.com";
+      const deployed = await deployForStandby(head, 9202, async () => ({
+        "refs/heads/main": "a".repeat(40),
+      }));
+      const connection = new AbortController();
+      const { outcome } = await askOnceQuiet(
+        deployed,
+        head,
+        "standby-if-idle",
+        connection.signal,
+      );
+      connection.abort();
+      expect(await outcome).toEqual({
+        notIdle: {
+          reason: expect.stringContaining("disconnected"),
+          quietForMs: 0,
+        },
+      });
+    }
+
+    {
+      const head = "run_standbyifidleranagain@example.com";
+      const holdTips = Promise.withResolvers<undefined>();
+      const tipsStarted = Promise.withResolvers<undefined>();
+      const deployed = await deployForStandby(head, 9206, async () => {
+        tipsStarted.resolve(undefined);
+        await holdTips.promise;
+        return { "refs/heads/main": "a".repeat(40) };
+      });
+      const { outcome } = await askOnceQuiet(deployed, head, "standby-if-idle");
+      await deployed.spawned.putChildInStandby(0, { quietForMs: 10_000 });
+      await tipsStarted.promise;
+      const woken = deployed.control("wake", "idle-wake-during-tips");
+      await deployed.spawned.driveReadyFor(1);
+      await deployed.spawned.answerParkedQuery(1, 1);
+      await woken;
+      holdTips.resolve(undefined);
+
+      expect(await outcome).toEqual({
+        notIdle: {
+          reason: expect.stringContaining("ran again"),
+          quietForMs: 0,
+        },
+      });
+    }
+  });
 
   test("restore holds a record whose closure will not materialize as stopped and restores the rest", async () => {
     const dataDir = await createTempBaseDir("sidecar-restore-softfail-data-");

@@ -1120,6 +1120,74 @@ describe("deployments in standby", () => {
       true,
     );
   });
+
+  test("a workflow control command requires minQuietMs on standby-if-idle and idle-check and rejects it on every other action", () => {
+    const control = (action: string, minQuietMs?: number) => ({
+      type: "workflow.control",
+      requestId: "control-1",
+      agentAddress: "wf@example.test",
+      generation: 1,
+      runId: "run_1",
+      action,
+      reason: "test",
+      ...(minQuietMs !== undefined ? { minQuietMs } : {}),
+    });
+    expect(
+      HubFrame(control("standby-if-idle", 1_000)) instanceof type.errors,
+    ).toBe(false);
+    expect(HubFrame(control("standby-if-idle")) instanceof type.errors).toBe(
+      true,
+    );
+    expect(HubFrame(control("standby-if-idle", 0)) instanceof type.errors).toBe(
+      true,
+    );
+    expect(
+      HubFrame(control("standby-if-idle", 1.5)) instanceof type.errors,
+    ).toBe(true);
+    expect(HubFrame(control("idle-check", 1_000)) instanceof type.errors).toBe(
+      false,
+    );
+    expect(HubFrame(control("idle-check")) instanceof type.errors).toBe(true);
+    expect(HubFrame(control("standby")) instanceof type.errors).toBe(false);
+    for (const action of ["standby", "cancel", "stop", "retain", "wake"])
+      expect(HubFrame(control(action, 1_000)) instanceof type.errors).toBe(
+        true,
+      );
+  });
+
+  test("a workflow control ack carries quietForMs only with an error", () => {
+    expect(
+      SidecarFrame({
+        type: "workflow.control.ack",
+        requestId: "control-1",
+        error: "not idle long enough",
+        quietForMs: 500,
+      }) instanceof type.errors,
+    ).toBe(false);
+    expect(
+      SidecarFrame({
+        type: "workflow.control.ack",
+        requestId: "control-1",
+        quietForMs: 500,
+      }) instanceof type.errors,
+    ).toBe(true);
+    expect(
+      SidecarFrame({
+        type: "workflow.control.ack",
+        requestId: "control-1",
+        error: "not idle long enough",
+        quietForMs: -1,
+      }) instanceof type.errors,
+    ).toBe(true);
+    expect(
+      SidecarFrame({
+        type: "workflow.control.ack",
+        requestId: "control-1",
+        error: "not idle long enough",
+        quietForMs: 1.5,
+      }) instanceof type.errors,
+    ).toBe(true);
+  });
 });
 
 describe("SenderKeyEvictFrame", () => {

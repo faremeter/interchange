@@ -23,6 +23,7 @@ import {
   createWorkflowPendingProjectionStore,
   createWorkflowRunStore,
   createWorkflowRunDispatchStore,
+  parseWorkflowRunLifecyclePolicy,
   parseWorkflowRunRow,
   reopenApprovals,
   runPrincipalHasActiveKey,
@@ -41,11 +42,12 @@ import {
   sidecarAllocation,
   workflowPendingProjection,
   workflowRun,
+  type StoredWorkflowStandbyState,
 } from "@intx/db/schema";
 import { getLogger } from "@intx/log";
 import {
   isSidecarAllocationDispatchable,
-  type WorkflowStandbyState,
+  lifecycleDurationMs,
 } from "@intx/types";
 
 import type { WorkflowHistoryReceiveTracker } from "./workflow-history-receives";
@@ -57,6 +59,7 @@ import type {
 } from "./workflow-run-reader";
 import {
   WorkflowControlNotConnectedError,
+  WorkflowControlNotIdleError,
   WorkflowControlHistoryPendingError,
   WorkflowControlInitializingError,
   WorkflowControlRejectedError,
@@ -93,9 +96,10 @@ const STOP_CONTROL_TIMEOUT_MS = 10_000;
 // A standby request is answered once every run waits, however long that takes,
 // so this bounds a wake and the Hub's handling of an answer.
 const STANDBY_CONTROL_TIMEOUT_MS = 60_000;
-// A standby command the sidecar did not settle goes out again after this long,
-// doubling up to the maximum. A retry whose request ended some other way is
-// forgotten once it is long past due.
+// A command that did not settle goes out again after this long, doubling up
+// to the maximum. A retry whose request ended some other way, or the idle
+// schedule of a run no longer connected here, is forgotten once it is long
+// past due.
 const STANDBY_RETRY_MIN_MS = 1_000;
 const STANDBY_RETRY_MAX_MS = 30_000;
 const STANDBY_RETRY_FORGET_MS = 60 * 60_000;
@@ -106,6 +110,15 @@ const REPORT_RETRY_MIN_MS = 5_000;
 const REPORT_RETRY_MAX_MS = 60_000;
 const REPORT_RETRY_GIVE_UP_MS = 5 * 60_000;
 const MAX_CONCURRENT_RETAINS_PER_SIDECAR = 8;
+const MAX_CONCURRENT_IDLE_STANDBYS_PER_SIDECAR = 8;
+// Unexpected refusals, and idle checks that got no answer, within the expiry
+// window (such as a sidecar unable to record standby on disk, or one too old
+// to know the command) before automatic standby stops for that allocation
+// generation.
+const MAX_IDLE_STANDBY_REFUSALS = 3;
+// Multiplier on `standbyAfter` after which prior refusals expire (16x, i.e.
+// four times the longest 4x backoff wait).
+const IDLE_STANDBY_REFUSAL_WINDOW_MULTIPLIER = 16;
 const STOP_FAILED_RELEASE = {
   failureCode: "workflow_stop_failed",
   failureMessage: "Workflow stop could not be confirmed; reclaiming capacity",
@@ -113,6 +126,10 @@ const STOP_FAILED_RELEASE = {
 const REPORTED_RUNNING_REASON =
   "The sidecar reported the workflow child running";
 const CANCELLED_STANDBY_REASON = "The deployment is being cancelled";
+const IDLE_STANDBY_REASON =
+  "Every run of the deployment waited on input from outside long enough for the Hub to put it in standby";
+const IDLE_STANDBY_ENTERING_REASON =
+  "Every run of the deployment waited on input from outside long enough, so the Hub is putting it in standby";
 
 type Run = ReturnType<typeof parseWorkflowRunRow>;
 type Allocation = typeof sidecarAllocation.$inferSelect;
@@ -134,7 +151,7 @@ type ReleaseStoppedCleanupResult =
 // while the sweep is backing off; `stop` and `sweep` respect the backoff, and
 // only `sweep` leaves young rows to the receive that wrote them.
 type RecoveryTrigger = "request" | "stop" | "sweep";
-type StandbyAction = "standby" | "wake";
+type StandbyAction = "standby" | "idle-check" | "idle-standby" | "wake";
 
 export type WorkflowLifecycleServiceDeps = {
   db: DB["db"];
@@ -160,9 +177,17 @@ export type WorkflowLifecycleServiceDeps = {
   sendControl?: SidecarAllocationRouter["sendWorkflowControl"];
   standbyRouter: Pick<
     SidecarAllocationRouter,
-    "putAllocationInStandby" | "wakeAllocation" | "holdsAllocatedBinding"
+    | "putAllocationInStandby"
+    | "putAllocationInStandbyIfIdle"
+    | "checkAllocationIdle"
+    | "wakeAllocation"
+    | "getIdleStandbyCandidates"
+    | "holdsAllocatedBinding"
   >;
-  /** Called after each standby or wake command ends, answered or not. */
+  /**
+   * Called after each standby, wake, idle check or automatic standby command
+   * ends, answered or not.
+   */
   onStandbyCommandSettled?: (runId: string) => void;
 };
 
@@ -210,8 +235,9 @@ export function createWorkflowLifecycleService({
     }
   >();
   const retentionsInFlight = new Set<string>();
-  // By run: when the sweep next repeats a request that got no answer, and why
-  // it got none. Kept off the run's row, so it cannot outlast the request.
+  // By run: when the sweep next repeats a command that did not settle, and for
+  // a request why it got no answer. Kept off the run's row, so it cannot
+  // outlast the request.
   const standbyRetries = new Map<
     string,
     {
@@ -221,9 +247,112 @@ export function createWorkflowLifecycleService({
       note: string | null;
     }
   >();
-  // The standby or wake request each run has outstanding, so a sweep does not
-  // repeat one the sidecar is still answering.
+  // The command each run has outstanding, so a sweep does not repeat one the
+  // sidecar is still answering.
   const standbyCommands = new Map<string, StandbyCommand>();
+  // Per-run schedule and refusal tracking for automatic standby
+  // (`standbyAfter`), scoped to an allocation generation on this Hub.
+  type IdleStandbyState =
+    | {
+        readonly kind: "scheduled";
+        readonly generation: number;
+        readonly standbyAfterMs: number;
+        readonly nextAt: number;
+        readonly refusals: number;
+        readonly lastRefusalAt: number | null;
+        readonly missingSince: number | null;
+      }
+    | {
+        readonly kind: "stopped";
+        readonly generation: number;
+        readonly missingSince: number | null;
+      };
+  const idleStandbyStates = new Map<string, IdleStandbyState>();
+  const idleStandbysPerSidecar = new Map<string, number>();
+
+  function hasIdleStandbyRoom(sidecarId: string): boolean {
+    return (
+      (idleStandbysPerSidecar.get(sidecarId) ?? 0) <
+      MAX_CONCURRENT_IDLE_STANDBYS_PER_SIDECAR
+    );
+  }
+
+  function reserveIdleStandbySlot(sidecarId: string): (() => void) | null {
+    const current = idleStandbysPerSidecar.get(sidecarId) ?? 0;
+    if (current >= MAX_CONCURRENT_IDLE_STANDBYS_PER_SIDECAR) return null;
+    idleStandbysPerSidecar.set(sidecarId, current + 1);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const count = idleStandbysPerSidecar.get(sidecarId);
+      if (count === undefined || count <= 1) {
+        idleStandbysPerSidecar.delete(sidecarId);
+      } else {
+        idleStandbysPerSidecar.set(sidecarId, count - 1);
+      }
+    };
+  }
+
+  function standbyAfterMsOf(rawPolicy: unknown): number | undefined {
+    const policy = parseWorkflowRunLifecyclePolicy(rawPolicy);
+    return policy?.standbyAfter === undefined
+      ? undefined
+      : lifecycleDurationMs(policy.standbyAfter);
+  }
+
+  // Drop prior refusals once 16 * `standbyAfter` has elapsed since the last
+  // refusal, so unrelated transient hiccups on a long-lived deployment do not
+  // accumulate and disable automatic standby, while a persistently failing
+  // sidecar still trips the limit even with busy checks in between.
+  function activeIdleRefusals(
+    state: IdleStandbyState | undefined,
+    generation: number,
+    standbyAfterMs: number,
+    at: number,
+  ): { refusals: number; lastRefusalAt: number | null } {
+    if (
+      state === undefined ||
+      state.generation !== generation ||
+      state.kind !== "scheduled" ||
+      state.refusals === 0 ||
+      state.lastRefusalAt === null
+    ) {
+      return { refusals: 0, lastRefusalAt: null };
+    }
+    const windowMs = standbyAfterMs * IDLE_STANDBY_REFUSAL_WINDOW_MULTIPLIER;
+    if (at - state.lastRefusalAt > windowMs) {
+      return { refusals: 0, lastRefusalAt: null };
+    }
+    return { refusals: state.refusals, lastRefusalAt: state.lastRefusalAt };
+  }
+
+  function resetIdleStandbyWait(
+    runId: string,
+    generation: number,
+    standbyAfterMs: number,
+  ): void {
+    const baseAt = now().getTime();
+    const existing = idleStandbyStates.get(runId);
+    const prior = existing?.generation === generation ? existing : undefined;
+    if (prior?.kind === "stopped") return;
+    const { refusals, lastRefusalAt } = activeIdleRefusals(
+      prior,
+      generation,
+      standbyAfterMs,
+      baseAt,
+    );
+    idleStandbyStates.set(runId, {
+      kind: "scheduled",
+      generation,
+      standbyAfterMs,
+      nextAt: baseAt + standbyAfterMs,
+      refusals,
+      lastRefusalAt,
+      missingSince: null,
+    });
+  }
+
   // The last turn taken for each allocation generation's reports and answers.
   const observationTails = new Map<string, Promise<void>>();
   // The last standby drive queued for each run.
@@ -578,13 +707,23 @@ export function createWorkflowLifecycleService({
       capacityReleaseAt: run.capacityReleaseAt?.toISOString() ?? null,
       standby: isLiveWorkflowRunStatus(run.status)
         ? {
-            state: run.standbyState ?? ("awake" as const),
+            state:
+              run.standbyState === "confirming"
+                ? ("entering" as const)
+                : (run.standbyState ?? ("awake" as const)),
             changedAt: run.standbyStateAt?.toISOString() ?? null,
             wakeAt:
               run.standbyState === "standby"
                 ? (run.standbyWakeAt?.toISOString() ?? null)
                 : null,
-            reason: standbyRetryNote(run) ?? run.standbyReason,
+            // The reason the last change left is not why the deployment
+            // enters standby now. It stays on the row, so a refused standby
+            // leaves it as it was, on any Hub.
+            reason:
+              standbyRetryNote(run) ??
+              (run.standbyState === "confirming"
+                ? IDLE_STANDBY_ENTERING_REASON
+                : run.standbyReason),
           }
         : null,
       allocation:
@@ -847,27 +986,60 @@ export function createWorkflowLifecycleService({
       }
       return "pending" as const;
     });
-    // A standby request in progress answers only once every run waits, so a
-    // wake that abandons it goes out now.
+    // A standby request in progress answers only once every run waits, and an
+    // automatic standby in flight may be stopping the child now, so a request
+    // that supersedes a command in flight goes out immediately.
+    const inFlightAction = standbyCommands.get(runId)?.action;
+    const automatic =
+      inFlightAction === "idle-check" || inFlightAction === "idle-standby";
     if (
       result === "pending" &&
-      wanted === "awake" &&
-      standbyCommands.get(runId)?.action === "standby"
+      (automatic || (wanted === "awake" && inFlightAction === "standby"))
     ) {
       void driveStandbyState(runId).catch((cause: unknown) => {
-        logger.warn`Workflow wake for ${runId} waits for the sweep: ${cause instanceof Error ? cause.message : String(cause)}`;
+        logger.warn`Workflow ${wanted === "awake" ? "wake" : "standby"} for ${runId} waits for the sweep: ${cause instanceof Error ? cause.message : String(cause)}`;
       });
     }
     return result;
   }
 
-  type StandbyCommand = {
-    target: AllocatedSidecarTarget;
-    runId: string;
-    action: StandbyAction;
-    // The request being carried out; an answer applies only while it stands.
-    stateAt: Date;
-  };
+  type StandbyCommand =
+    | {
+        target: AllocatedSidecarTarget;
+        runId: string;
+        action: "standby" | "wake";
+        // The request being carried out; an answer applies only while it
+        // stands.
+        stateAt: Date;
+      }
+    | {
+        target: AllocatedSidecarTarget;
+        sidecarId: string;
+        runId: string;
+        action: "idle-standby";
+        minQuietMs: number;
+        // The `confirming` state being carried out; settlement matches it so a
+        // concurrent wake or explicit standby wins.
+        stateAt: Date;
+        // Restored when a refusal clears `confirming` back to null, so a
+        // standby that did not happen does not move `changedAt`. Kept in
+        // memory only: a Hub that finds a row already `confirming` has none.
+        previousStateAt?: Date | null;
+      }
+    | {
+        target: AllocatedSidecarTarget;
+        sidecarId: string;
+        runId: string;
+        action: "idle-check";
+        minQuietMs: number;
+        // When the run's standby state last changed, as read before the check;
+        // `confirming` is recorded only while this still stands.
+        previousStateAt: Date | null;
+      };
+
+  // A command that carries out a recorded standby state; an idle check has
+  // none.
+  type SentStandbyCommand = Exclude<StandbyCommand, { action: "idle-check" }>;
 
   // The anchor run an allocation generation serves.
   function anchorOf(target: AllocatedSidecarTarget) {
@@ -884,13 +1056,15 @@ export function createWorkflowLifecycleService({
 
   // Records what a generation's sidecar did with that allocation row locked
   // first, as pack ingestion does, so a replacement cannot commit in between;
-  // skipped once the generation moved on.
+  // skipped once the generation moved on (or immediately when `skipLocked` is
+  // set and another transaction holds the allocation lock).
   async function withReportingGeneration(
     target: AllocatedSidecarTarget,
     write: (tx: DBExecutor, runId: string) => Promise<unknown>,
+    opts?: { skipLocked?: boolean },
   ): Promise<void> {
     await db.transaction(async (tx) => {
-      const [allocation] = await tx
+      const query = tx
         .select({ runId: sidecarAllocation.anchorRunId })
         .from(sidecarAllocation)
         .where(
@@ -898,8 +1072,10 @@ export function createWorkflowLifecycleService({
             eq(sidecarAllocation.id, target.allocationId),
             eq(sidecarAllocation.generation, target.generation),
           ),
-        )
-        .for("update");
+        );
+      const [allocation] = await (opts?.skipLocked === true
+        ? query.for("update", { skipLocked: true })
+        : query.for("update"));
       if (allocation !== undefined) await write(tx, allocation.runId);
     });
   }
@@ -908,9 +1084,12 @@ export function createWorkflowLifecycleService({
   // before it sent its command, so a command chosen from an older read never
   // reaches the sidecar after one chosen from a newer read. Answers are
   // awaited outside the queue.
-  function driveStandbyState(runId: string): Promise<void> {
+  function driveStandbyState(
+    runId: string,
+    opts?: { respectRetry?: boolean },
+  ): Promise<void> {
     const previous = standbyDrives.get(runId) ?? Promise.resolve();
-    const drive = previous.then(() => sendPendingStandbyCommand(runId));
+    const drive = previous.then(() => sendPendingStandbyCommand(runId, opts));
     const tail = drive.catch(() => undefined);
     standbyDrives.set(runId, tail);
     void tail.then(() => {
@@ -919,17 +1098,38 @@ export function createWorkflowLifecycleService({
     return drive;
   }
 
-  // Sends the command that carries out a pending standby or wake request once
-  // the Hub can deliver it: the copy is deployed and its sidecar connected. A
-  // command waits for its answer or its connection; the sweep sends again
-  // after either.
-  async function sendPendingStandbyCommand(runId: string) {
+  function startIdleStandbyCommand(
+    command: Extract<StandbyCommand, { action: "idle-standby" }>,
+    releaseSlot: () => void,
+  ): void {
+    const { runId } = command;
+    standbyCommands.set(runId, command);
+    void sendStandbyCommand(command)
+      .finally(releaseSlot)
+      .then(() => {
+        if (standbyCommands.get(runId) === command)
+          standbyCommands.delete(runId);
+        onStandbyCommandSettled?.(runId);
+      });
+  }
+
+  // Sends the command the row asks for: a pending standby or wake request, the
+  // `standby-if-idle` of a row in `confirming`, or an idle check when
+  // `standbyAfter` is due. It goes out once the Hub can deliver it: the copy
+  // is deployed and its sidecar connected. A command waits for its answer or
+  // its connection; the sweep sends again after either.
+  async function sendPendingStandbyCommand(
+    runId: string,
+    opts?: { respectRetry?: boolean },
+  ) {
     const [row] = await db
       .select({
         run: workflowRun,
         allocationId: sidecarAllocation.id,
         allocationStatus: sidecarAllocation.status,
         generation: sidecarAllocation.generation,
+        ensureAcceptedGeneration: sidecarAllocation.ensureAcceptedGeneration,
+        initializationLeaseId: sidecarAllocation.initializationLeaseId,
         sidecarId: sidecarAllocation.sidecarId,
       })
       .from(workflowRun)
@@ -947,36 +1147,241 @@ export function createWorkflowLifecycleService({
     if (row === undefined) return;
     const run = parseWorkflowRunRow(row.run);
     if (
-      (run.standbyState !== "entering" && run.standbyState !== "waking") ||
-      run.standbyStateAt === null ||
       !isLiveWorkflowRunStatus(run.status) ||
       run.cancellationRequestedAt !== null ||
       row.allocationStatus !== "allocated" ||
       row.sidecarId === null
     )
       return;
-    const action: StandbyAction =
-      run.standbyState === "entering" ? "standby" : "wake";
     const target = {
       allocationId: row.allocationId,
       generation: row.generation,
     };
     if (!standbyRouter.holdsAllocatedBinding(target)) return;
     const inFlight = standbyCommands.get(runId);
+    // A retry left by another action does not hold back what the row asks for
+    // now, such as a wake another Hub recorded over this Hub's automatic
+    // standby.
+    const wanted: StandbyAction =
+      run.standbyState === "entering"
+        ? "standby"
+        : run.standbyState === "waking"
+          ? "wake"
+          : run.standbyState === "confirming"
+            ? "idle-standby"
+            : "idle-check";
+    if (opts?.respectRetry === true && standbyRetryWaits(runId, wanted)) return;
+
+    if (run.standbyState === "entering" || run.standbyState === "waking") {
+      if (run.standbyStateAt === null) return;
+      const action = run.standbyState === "entering" ? "standby" : "wake";
+      if (
+        inFlight?.action === action &&
+        inFlight.target.generation === row.generation
+      )
+        return;
+      const command: StandbyCommand = {
+        target,
+        runId,
+        action,
+        stateAt: run.standbyStateAt,
+      };
+      standbyCommands.set(runId, command);
+      void sendStandbyCommand(command).then(() => {
+        if (standbyCommands.get(runId) === command)
+          standbyCommands.delete(runId);
+        onStandbyCommandSettled?.(runId);
+      });
+      return;
+    }
+
+    if (run.standbyState === "confirming") {
+      if (
+        run.standbyStateAt === null ||
+        run.lifecyclePolicy?.standbyAfter === undefined
+      )
+        return;
+      if (
+        inFlight?.action === "idle-standby" &&
+        inFlight.target.generation === row.generation
+      )
+        return;
+      const releaseSlot = reserveIdleStandbySlot(row.sidecarId);
+      if (releaseSlot === null) return;
+      startIdleStandbyCommand(
+        {
+          target,
+          sidecarId: row.sidecarId,
+          runId,
+          action: "idle-standby",
+          minQuietMs: lifecycleDurationMs(run.lifecyclePolicy.standbyAfter),
+          stateAt: run.standbyStateAt,
+        },
+        releaseSlot,
+      );
+      return;
+    }
+
     if (
-      inFlight?.action === action &&
-      inFlight.target.generation === row.generation
+      run.standbyState !== null ||
+      run.lifecyclePolicy?.standbyAfter === undefined ||
+      row.ensureAcceptedGeneration !== row.generation ||
+      row.initializationLeaseId !== null
     )
       return;
-    const command = { target, runId, action, stateAt: run.standbyStateAt };
-    standbyCommands.set(runId, command);
-    void sendStandbyCommand(command).then(() => {
-      if (standbyCommands.get(runId) === command) standbyCommands.delete(runId);
-      onStandbyCommandSettled?.(runId);
-    });
+    if (inFlight !== undefined) return;
+    const standbyAfterMs = lifecycleDurationMs(
+      run.lifecyclePolicy.standbyAfter,
+    );
+    const at = now().getTime();
+    const existing = idleStandbyStates.get(runId);
+    const state =
+      existing !== undefined && existing.generation === row.generation
+        ? existing
+        : undefined;
+    if (state?.kind === "stopped") return;
+    if (state === undefined) {
+      const floorMs = Math.max(
+        run.createdAt.getTime(),
+        run.standbyStateAt?.getTime() ?? 0,
+      );
+      const earliestPossible = floorMs + standbyAfterMs;
+      if (earliestPossible > at) {
+        idleStandbyStates.set(runId, {
+          kind: "scheduled",
+          generation: row.generation,
+          standbyAfterMs,
+          nextAt: earliestPossible,
+          refusals: 0,
+          lastRefusalAt: null,
+          missingSince: null,
+        });
+        return;
+      }
+    } else if (at < state.nextAt) {
+      return;
+    }
+    const releaseSlot = reserveIdleStandbySlot(row.sidecarId);
+    if (releaseSlot === null) return;
+    startIdleCheck(
+      {
+        target,
+        sidecarId: row.sidecarId,
+        runId,
+        action: "idle-check",
+        minQuietMs: standbyAfterMs,
+        previousStateAt: run.standbyStateAt,
+      },
+      releaseSlot,
+    );
   }
 
-  async function sendStandbyCommand(command: StandbyCommand): Promise<void> {
+  // Asks the sidecar whether the deployment is idle before anything is
+  // recorded, so a busy deployment's row and public status never change.
+  function startIdleCheck(
+    command: Extract<StandbyCommand, { action: "idle-check" }>,
+    releaseSlot: () => void,
+  ): void {
+    const { runId } = command;
+    standbyCommands.set(runId, command);
+    void checkIdleThenStandby(command, releaseSlot)
+      .catch((cause: unknown) => {
+        logger.error`Automatic standby check for ${runId} failed; the sweep checks again: ${cause instanceof Error ? cause.message : String(cause)}`;
+        return false;
+      })
+      .then((handedOver) => {
+        if (!handedOver) {
+          releaseSlot();
+          if (standbyCommands.get(runId) === command)
+            standbyCommands.delete(runId);
+        }
+        onStandbyCommandSettled?.(runId);
+      });
+  }
+
+  // Whether the automatic standby an idle answer led to took over the check's
+  // slot.
+  async function checkIdleThenStandby(
+    command: Extract<StandbyCommand, { action: "idle-check" }>,
+    releaseSlot: () => void,
+  ): Promise<boolean> {
+    try {
+      await standbyRouter.checkAllocationIdle(
+        command.target,
+        command.minQuietMs,
+        STANDBY_CONTROL_TIMEOUT_MS,
+      );
+    } catch (error) {
+      await handleIdleStandbyError(
+        command,
+        error,
+        error instanceof Error ? error.message : String(error),
+      );
+      return false;
+    }
+    // A newer explicit standby or wake already replaced this check.
+    if (standbyCommands.get(command.runId) !== command) return false;
+    // Persist `confirming` before sending `standby-if-idle` so every Hub,
+    // reconnect `hello`, and wake request sees the automatic standby in flight.
+    // A locked allocation row is usually a history receive or the sweep, so
+    // this skips it instead of waiting.
+    const confirmingAt = now();
+    const { previousStateAt } = command;
+    let recorded = false;
+    await withReportingGeneration(
+      command.target,
+      async (tx, anchorId) => {
+        const updated = await tx
+          .update(workflowRun)
+          .set({
+            standbyState: "confirming",
+            standbyStateAt: confirmingAt,
+            standbyWakeAt: null,
+          })
+          .where(
+            and(
+              eq(workflowRun.id, anchorId),
+              isNull(workflowRun.standbyState),
+              previousStateAt === null
+                ? isNull(workflowRun.standbyStateAt)
+                : eq(workflowRun.standbyStateAt, previousStateAt),
+              inArray(workflowRun.status, [...liveWorkflowRunStatuses]),
+              isNull(workflowRun.cancellationRequestedAt),
+            ),
+          )
+          .returning({ id: workflowRun.id });
+        recorded = updated.length > 0;
+      },
+      { skipLocked: true },
+    );
+    if (standbyCommands.get(command.runId) !== command) return false;
+    if (!recorded) {
+      // Retried after a growing wait, not on every pass.
+      const message =
+        "its allocation row is locked, or the deployment changed since the check began";
+      logger.info`Automatic standby for ${command.runId} deferred: ${message}`;
+      deferStandbyCommand(command, new Error(message), message);
+      return false;
+    }
+    clearStandbyRetry(command);
+    startIdleStandbyCommand(
+      {
+        target: command.target,
+        sidecarId: command.sidecarId,
+        runId: command.runId,
+        action: "idle-standby",
+        minQuietMs: command.minQuietMs,
+        stateAt: confirmingAt,
+        previousStateAt,
+      },
+      releaseSlot,
+    );
+    return true;
+  }
+
+  async function sendStandbyCommand(
+    command: SentStandbyCommand,
+  ): Promise<void> {
     let turn: ReturnType<typeof takeObservationTurn> | undefined;
     const onAnswered = (): void => {
       turn ??= takeObservationTurn(command.target);
@@ -996,6 +1401,18 @@ export function createWorkflowLifecycleService({
             // It went as requested, so no earlier reason stands.
             standbyReason: null,
           };
+        } else if (command.action === "idle-standby") {
+          const { wakeAt } = await standbyRouter.putAllocationInStandbyIfIdle(
+            command.target,
+            command.minQuietMs,
+            STANDBY_CONTROL_TIMEOUT_MS,
+            onAnswered,
+          );
+          change = {
+            standbyState: "standby",
+            standbyWakeAt: wakeAt === undefined ? null : new Date(wakeAt),
+            standbyReason: IDLE_STANDBY_REASON,
+          };
         } else {
           await standbyRouter.wakeAllocation(
             command.target,
@@ -1007,6 +1424,10 @@ export function createWorkflowLifecycleService({
       } catch (error) {
         await turn?.ready;
         const message = error instanceof Error ? error.message : String(error);
+        if (command.action === "idle-standby") {
+          await handleIdleStandbyError(command, error, message);
+          return;
+        }
         // Only the sidecar's refusal ends a request; the sweep repeats one that
         // got no answer. One whose history the Hub does not hold is asked again
         // however long that takes: history that never arrives means the Hub or
@@ -1027,22 +1448,180 @@ export function createWorkflowLifecycleService({
         return;
       }
       await turn?.ready;
-      // The request still stands, so the sweep asks again and records the
-      // answer the sidecar gives then.
       await settleStandbyCommand(command, change)
-        .then(() => {
+        .then((settled) => {
           clearStandbyRetry(command);
+          const at = now().getTime();
+          const existing = idleStandbyStates.get(command.runId);
+          if (command.action === "idle-standby") {
+            if (settled !== undefined) {
+              logger.info`Put ${command.runId} in standby after every run waited ${String(command.minQuietMs)} ms`;
+            }
+            idleStandbyStates.set(command.runId, {
+              kind: "scheduled",
+              generation: command.target.generation,
+              standbyAfterMs: command.minQuietMs,
+              nextAt: at + command.minQuietMs,
+              refusals: 0,
+              lastRefusalAt: null,
+              missingSince: null,
+            });
+          } else if (
+            command.action === "standby" &&
+            existing !== undefined &&
+            existing.generation === command.target.generation
+          ) {
+            // A recorded explicit standby resets any refusal circuit-breaker.
+            if (existing.kind === "stopped") {
+              idleStandbyStates.delete(command.runId);
+            } else {
+              idleStandbyStates.set(command.runId, {
+                ...existing,
+                refusals: 0,
+                lastRefusalAt: null,
+                missingSince: null,
+              });
+            }
+          } else if (command.action === "wake") {
+            const standbyAfterMs =
+              settled?.standbyAfterMs ??
+              (existing?.generation === command.target.generation &&
+              existing.kind === "scheduled"
+                ? existing.standbyAfterMs
+                : undefined);
+            if (standbyAfterMs !== undefined) {
+              resetIdleStandbyWait(
+                command.runId,
+                command.target.generation,
+                standbyAfterMs,
+              );
+            }
+          }
         })
         .catch((cause: unknown) => {
+          // The request still stands, so the sweep asks again and records the
+          // answer the sidecar gives then.
           logger.error`Could not record the answered ${command.action} for ${command.runId}; the sweep asks again: ${cause instanceof Error ? cause.message : String(cause)}`;
+          if (command.action === "idle-standby") {
+            deferStandbyCommand(
+              command,
+              cause,
+              cause instanceof Error ? cause.message : String(cause),
+            );
+          }
         });
     } finally {
       turn?.done();
     }
   }
 
-  // The sweep leaves the command alone until its retry is due. History still on
-  // its way is the one failure nobody has to look at, so any other says why.
+  async function handleIdleStandbyError(
+    command: Extract<StandbyCommand, { action: "idle-check" | "idle-standby" }>,
+    error: unknown,
+    message: string,
+  ): Promise<void> {
+    // A newer explicit standby or wake already replaced this command.
+    if (standbyCommands.get(command.runId) !== command) return;
+    const at = now().getTime();
+    const { refusals, lastRefusalAt } = activeIdleRefusals(
+      idleStandbyStates.get(command.runId),
+      command.target.generation,
+      command.minQuietMs,
+      at,
+    );
+    // Only an automatic standby recorded `confirming`; a check recorded
+    // nothing.
+    const clearConfirming = async (): Promise<void> => {
+      if (command.action === "idle-check") return;
+      await settleStandbyCommand(command, {
+        standbyState: null,
+        standbyStateAt:
+          command.previousStateAt !== undefined
+            ? command.previousStateAt
+            : command.stateAt,
+      });
+    };
+    if (error instanceof WorkflowControlNotIdleError) {
+      clearStandbyRetry(command);
+      try {
+        await clearConfirming();
+      } catch (cause) {
+        const causeMessage =
+          cause instanceof Error ? cause.message : String(cause);
+        logger.error`Could not clear confirming standby for ${command.runId}; the sweep asks again: ${causeMessage}`;
+        deferStandbyCommand(command, cause, causeMessage);
+        return;
+      }
+      // A refusal that reports no quiet time waits the full wait again, even
+      // when a moment of sidecar work or a slow answer caused it: the sidecar
+      // then does not know how long the child had been quiet.
+      const remaining =
+        error.quietForMs < command.minQuietMs
+          ? command.minQuietMs - error.quietForMs
+          : command.minQuietMs;
+      idleStandbyStates.set(command.runId, {
+        kind: "scheduled",
+        generation: command.target.generation,
+        standbyAfterMs: command.minQuietMs,
+        nextAt: at + remaining,
+        refusals,
+        lastRefusalAt,
+        missingSince: null,
+      });
+      return;
+    }
+    // An idle check waits on no work, so a live connection silent on one for
+    // the whole control timeout most likely holds a sidecar too old to know
+    // the command. A current sidecar backed up that long takes a strike too.
+    if (
+      error instanceof WorkflowControlRejectedError ||
+      (command.action === "idle-check" &&
+        error instanceof WorkflowControlTimeoutError)
+    ) {
+      clearStandbyRetry(command);
+      try {
+        await clearConfirming();
+      } catch (cause) {
+        const causeMessage =
+          cause instanceof Error ? cause.message : String(cause);
+        logger.error`Could not clear refused confirming standby for ${command.runId}; the sweep asks again: ${causeMessage}`;
+        deferStandbyCommand(command, cause, causeMessage);
+        return;
+      }
+      const nextRefusals = refusals + 1;
+      if (nextRefusals >= MAX_IDLE_STANDBY_REFUSALS) {
+        idleStandbyStates.set(command.runId, {
+          kind: "stopped",
+          generation: command.target.generation,
+          missingSince: null,
+        });
+        logger.error`Automatic standby for ${command.runId} failed ${String(nextRefusals)} times, stopping automatic standby for this allocation generation until a standby succeeds: ${message}`;
+      } else {
+        const waitMs = command.minQuietMs * 2 ** nextRefusals;
+        idleStandbyStates.set(command.runId, {
+          kind: "scheduled",
+          generation: command.target.generation,
+          standbyAfterMs: command.minQuietMs,
+          nextAt: at + waitMs,
+          refusals: nextRefusals,
+          lastRefusalAt: at,
+          missingSince: null,
+        });
+        logger.warn`Automatic standby for ${command.runId} failed (${String(nextRefusals)} of ${String(MAX_IDLE_STANDBY_REFUSALS)}); waiting ${String(waitMs)} ms before trying again: ${message}`;
+      }
+      return;
+    }
+    // Uncertain outcome (history pending, initializing, a standby's timeout,
+    // disconnect): a `confirming` already recorded stays, so any Hub,
+    // reconnect, or wake sees it.
+    logger.info`Automatic standby for ${command.runId} deferred: ${message}`;
+    deferStandbyCommand(command, error, message);
+  }
+
+  // The sweep leaves the command alone until its retry is due. An idle check
+  // never says why in public, since the status reads awake through it. For
+  // any other command, history still on its way is the one failure nobody has
+  // to look at, so any other says why.
   function deferStandbyCommand(
     command: StandbyCommand,
     error: unknown,
@@ -1062,9 +1641,16 @@ export function createWorkflowLifecycleService({
           STANDBY_RETRY_MIN_MS * 2 ** (failures - 1),
         ),
       note:
+        command.action === "idle-check" ||
         error instanceof WorkflowControlHistoryPendingError
           ? (previous?.note ?? null)
-          : `The Hub could not ${command.action === "standby" ? "put the deployment in standby" : "wake the deployment"} yet and keeps asking${saysWhyStandbyWaits(error) ? `: ${message}` : ""}`,
+          : `The Hub could not ${
+              command.action === "standby"
+                ? "put the deployment in standby"
+                : command.action === "idle-standby"
+                  ? "put the deployment in standby for the policy's standbyAfter"
+                  : "wake the deployment"
+            } yet and keeps asking${saysWhyStandbyWaits(error) ? `: ${message}` : ""}`,
     });
   }
 
@@ -1086,9 +1672,13 @@ export function createWorkflowLifecycleService({
     }
   }
 
-  function standbyRetryWaits(runId: string): boolean {
+  function standbyRetryWaits(runId: string, action: StandbyAction): boolean {
     const retry = standbyRetries.get(runId);
-    return retry !== undefined && now().getTime() < retry.nextAt;
+    return (
+      retry !== undefined &&
+      retry.action === action &&
+      now().getTime() < retry.nextAt
+    );
   }
 
   // Why the request a run has pending got no answer yet, if this Hub knows.
@@ -1098,35 +1688,50 @@ export function createWorkflowLifecycleService({
         ? "standby"
         : run.standbyState === "waking"
           ? "wake"
-          : null;
+          : run.standbyState === "confirming"
+            ? "idle-standby"
+            : null;
     const retry = standbyRetries.get(run.id);
     return retry !== undefined && retry.action === pending ? retry.note : null;
   }
 
-  // Records an answer while the request it carried out still stands.
+  // Records an answer while the request it carried out still stands, and
+  // resolves undefined when it no longer did.
   async function settleStandbyCommand(
-    command: StandbyCommand,
+    command: SentStandbyCommand,
     change: {
-      standbyState: WorkflowStandbyState | null;
+      standbyState: StoredWorkflowStandbyState | null;
+      standbyStateAt?: Date | null;
       standbyWakeAt?: Date | null;
       standbyReason?: string | null;
     },
-  ): Promise<void> {
-    await withReportingGeneration(command.target, (tx, runId) =>
-      tx
+  ): Promise<{ standbyAfterMs: number | undefined } | undefined> {
+    const expectedState: StoredWorkflowStandbyState =
+      command.action === "standby"
+        ? "entering"
+        : command.action === "idle-standby"
+          ? "confirming"
+          : "waking";
+    let settled: { standbyAfterMs: number | undefined } | undefined;
+    await withReportingGeneration(command.target, async (tx, runId) => {
+      const [updated] = await tx
         .update(workflowRun)
-        .set({ standbyWakeAt: null, ...change, standbyStateAt: now() })
+        .set({ standbyWakeAt: null, standbyStateAt: now(), ...change })
         .where(
           and(
             eq(workflowRun.id, runId),
-            eq(
-              workflowRun.standbyState,
-              command.action === "standby" ? "entering" : "waking",
-            ),
+            eq(workflowRun.standbyState, expectedState),
             eq(workflowRun.standbyStateAt, command.stateAt),
           ),
-        ),
-    );
+        )
+        .returning({ lifecyclePolicy: workflowRun.lifecyclePolicy });
+      if (updated !== undefined) {
+        settled = {
+          standbyAfterMs: standbyAfterMsOf(updated.lifecyclePolicy),
+        };
+      }
+    });
+    return settled;
   }
 
   // The sidecar's word on whether the child is in standby: each hello reports
@@ -1230,9 +1835,13 @@ export function createWorkflowLifecycleService({
     }
     // A running child ends a recorded standby, and an input that woke it
     // also carried out a pending wake. A pending standby request stands: the
-    // sidecar carries it out next.
+    // sidecar carries it out next. An automatic standby still confirming
+    // stands too until its own answer clears it, so the reason of a wake
+    // that came first is not recorded, as for a request still entering.
+    let wokenPolicyStandbyAfterMs: number | undefined;
+    let endedStandby = false;
     await withReportingGeneration(report, async (tx, runId) => {
-      await tx
+      const updated = await tx
         .update(workflowRun)
         .set({
           standbyState: null,
@@ -1247,7 +1856,14 @@ export function createWorkflowLifecycleService({
               ? eq(workflowRun.standbyState, "standby")
               : inArray(workflowRun.standbyState, ["standby", "waking"]),
           ),
+        )
+        .returning({ lifecyclePolicy: workflowRun.lifecyclePolicy });
+      if (updated[0] !== undefined) {
+        endedStandby = true;
+        wokenPolicyStandbyAfterMs = standbyAfterMsOf(
+          updated[0].lifecyclePolicy,
         );
+      }
       // After a reconnect the `hello` can end the standby request before the
       // wake report held across it arrives; that report still says what woke
       // the child.
@@ -1264,6 +1880,27 @@ export function createWorkflowLifecycleService({
           );
       }
     });
+    if (endedStandby) {
+      logger.info`Workflow child of ${anchor.id} woke from standby: ${report.reason ?? REPORTED_RUNNING_REASON}`;
+    }
+    const existing = idleStandbyStates.get(anchor.id);
+    const sameGen =
+      existing !== undefined && existing.generation === report.generation;
+    const standbyAfterMs =
+      wokenPolicyStandbyAfterMs ??
+      (sameGen && existing.kind === "scheduled"
+        ? existing.standbyAfterMs
+        : undefined);
+    if (
+      standbyAfterMs !== undefined &&
+      (endedStandby || report.reason !== undefined)
+    ) {
+      const retried = standbyRetries.get(anchor.id)?.action;
+      if (retried === "idle-check" || retried === "idle-standby") {
+        standbyRetries.delete(anchor.id);
+      }
+      resetIdleStandbyWait(anchor.id, report.generation, standbyAfterMs);
+    }
   }
 
   async function markStopped(tx: DBExecutor, run: Run): Promise<void> {
@@ -1515,8 +2152,8 @@ export function createWorkflowLifecycleService({
       // A run that needs the locked pass is being cancelled, has lost its
       // capacity, or has ended, so no sidecar could carry out a standby
       // request for it. A pending projection also brings a run here, which
-      // must not cut its retry's wait short.
-      if (!standbyRetryWaits(runId)) await driveStandbyState(runId);
+      // must not cut a matching retry's wait short.
+      await driveStandbyState(runId, { respectRetry: true });
       return;
     }
     const command = await withRun(
@@ -1734,6 +2371,40 @@ export function createWorkflowLifecycleService({
         });
       },
       standbyCommandsInFlight,
+      () => {
+        const at = now().getTime();
+        const candidates = standbyRouter.getIdleStandbyCandidates();
+        if (idleStandbyStates.size > 0) {
+          const current = new Map(
+            candidates.map((target) => [target.runId, target.generation]),
+          );
+          for (const [runId, state] of idleStandbyStates) {
+            const gen = current.get(runId);
+            if (gen === state.generation) {
+              if (state.missingSince !== null) {
+                idleStandbyStates.set(runId, { ...state, missingSince: null });
+              }
+            } else if (!standbyCommands.has(runId)) {
+              if (gen !== undefined) {
+                idleStandbyStates.delete(runId);
+              } else if (state.missingSince === null) {
+                idleStandbyStates.set(runId, { ...state, missingSince: at });
+              } else if (at - state.missingSince > STANDBY_RETRY_FORGET_MS) {
+                idleStandbyStates.delete(runId);
+              }
+            }
+          }
+        }
+        return candidates.filter((target) => {
+          if (standbyCommands.has(target.runId)) return false;
+          if (!hasIdleStandbyRoom(target.sidecarId)) return false;
+          if (standbyRetryWaits(target.runId, "idle-check")) return false;
+          const state = idleStandbyStates.get(target.runId);
+          if (state === undefined || state.generation !== target.generation)
+            return true;
+          return state.kind === "scheduled" && state.nextAt <= at;
+        });
+      },
     ),
     {
       intervalMs: SWEEP_INTERVAL_MS,
@@ -1745,20 +2416,25 @@ export function createWorkflowLifecycleService({
   // not hold its run back.
   function standbyCommandsInFlight() {
     const enterStandby: string[] = [];
+    const confirming: string[] = [];
     const wake: string[] = [];
     for (const [runId, { action, target }] of standbyCommands) {
       if (!standbyRouter.holdsAllocatedBinding(target)) continue;
-      (action === "standby" ? enterStandby : wake).push(runId);
+      if (action === "standby") enterStandby.push(runId);
+      else if (action === "idle-standby") confirming.push(runId);
+      else if (action === "wake") wake.push(runId);
     }
     const at = now().getTime();
     for (const [runId, retry] of standbyRetries) {
       if (at < retry.nextAt) {
-        (retry.action === "standby" ? enterStandby : wake).push(runId);
+        if (retry.action === "standby") enterStandby.push(runId);
+        else if (retry.action === "idle-standby") confirming.push(runId);
+        else if (retry.action === "wake") wake.push(runId);
       } else if (at - retry.nextAt > STANDBY_RETRY_FORGET_MS) {
         standbyRetries.delete(runId);
       }
     }
-    return { enterStandby, wake };
+    return { enterStandby, confirming, wake };
   }
 
   async function reconcileNext(): Promise<boolean> {
@@ -1795,8 +2471,9 @@ export type WorkflowLifecycleService = ReturnType<
 
 /**
  * Selects the deployments `reconcileRun` can act on: a live run that is
- * cancelling, past its expiry, or waiting on a standby or wake request its
- * sidecar is not already answering, terminal
+ * cancelling, past its expiry, or waiting on a standby or wake request or an
+ * automatic standby its sidecar is not already answering, a connected live
+ * deployment whose `standbyAfter` idle check is due on this Hub, terminal
  * copies needing retention or release, a deferred infrastructure failure, and
  * accepted history left unprojected past its grace. A new action there needs a
  * branch here. Deployments are never deleted, so each branch starts from an
@@ -1817,8 +2494,10 @@ export function createLifecycleSweepQueries(
   getRetentionCandidates: SidecarAllocationRouter["getRetentionCandidates"],
   getStandbyCommandsInFlight: () => {
     enterStandby: string[];
+    confirming: string[];
     wake: string[];
   },
+  getIdleStandbyCandidates: SidecarAllocationRouter["getIdleStandbyCandidates"],
 ): AnchorRunSweepQueries<{ id: string; tenantId: string }> {
   // Selection runs once per candidate of every pass, so it is built once.
   function prepareBranches(afterCursor: boolean) {
@@ -1933,6 +2612,7 @@ export function createLifecycleSweepQueries(
               sql.param(sql.placeholder("now"), workflowRun.expiresAt),
             ),
             sql`(${workflowRun.standbyState} = 'entering' and ${workflowRun.id} <> all(${sql.placeholder("standbyInFlight")}::text[]))`,
+            sql`(${workflowRun.standbyState} = 'confirming' and ${workflowRun.id} <> all(${sql.placeholder("confirmingInFlight")}::text[]))`,
             sql`(${workflowRun.standbyState} = 'waking' and ${workflowRun.id} <> all(${sql.placeholder("wakesInFlight")}::text[]))`,
           ),
           inPass(workflowRun.id),
@@ -1972,11 +2652,46 @@ export function createLifecycleSweepQueries(
       )
       .orderBy(asc(workflowPendingProjection.anchorRunId))
       .limit(1);
+    // Connected live deployments whose policy sets `standbyAfter` and whose
+    // idle check is due on this Hub.
+    const idleStandbyDue = db
+      .select({ id: sidecarAllocation.anchorRunId })
+      .from(sidecarAllocation)
+      .crossJoinLateral(
+        anchorOf(
+          sidecarAllocation.anchorRunId,
+          and(
+            sql`${workflowRun.status} in ('deployed', 'running')`,
+            isNull(workflowRun.cancellationRequestedAt),
+            isNull(workflowRun.standbyState),
+            sql`${workflowRun.lifecyclePolicy} ? 'standbyAfter'`,
+            runPrincipalHasActiveKey(workflowRun.tenantId, workflowRun.id),
+          ),
+        ),
+      )
+      .where(
+        and(
+          eq(sidecarAllocation.status, "allocated"),
+          sql`${sidecarAllocation.id} = any(${sql.placeholder("idleIds")}::text[])`,
+          sql`${sidecarAllocation.generation} = (${sql.placeholder("idleGenerations")}::jsonb ->> ${sidecarAllocation.id})::integer`,
+          eq(
+            sidecarAllocation.ensureAcceptedGeneration,
+            sidecarAllocation.generation,
+          ),
+          isNull(sidecarAllocation.initializationLeaseId),
+          inPass(sidecarAllocation.anchorRunId),
+        ),
+      )
+      .orderBy(asc(sidecarAllocation.anchorRunId))
+      .limit(1);
     const position = afterCursor ? "next" : "first";
     return {
       retention: retentionDue.prepare(`lifecycle_sweep_retention_${position}`),
       release: releaseDue.prepare(`lifecycle_sweep_release_${position}`),
       live: liveDue.prepare(`lifecycle_sweep_live_${position}`),
+      idleStandby: idleStandbyDue.prepare(
+        `lifecycle_sweep_idle_standby_${position}`,
+      ),
       infrastructure: infrastructureFailed.prepare(
         `lifecycle_sweep_infrastructure_${position}`,
       ),
@@ -1988,7 +2703,14 @@ export function createLifecycleSweepQueries(
   const first = prepareBranches(false);
   const next = prepareBranches(true);
   const branches = (
-    ["retention", "release", "live", "infrastructure", "history"] as const
+    [
+      "retention",
+      "release",
+      "live",
+      "idleStandby",
+      "infrastructure",
+      "history",
+    ] as const
   ).map((name) => ({ name, first: first[name], next: next[name] }));
   // Postgres picks the lowest candidate, so the choice follows the same
   // collation as the cursor comparisons.
@@ -2011,6 +2733,8 @@ export function createLifecycleSweepQueries(
   let candidates: (string | null | undefined)[] = [];
   let retentionIds: string[] = [];
   let retentionGenerations = "{}";
+  let idleIds: string[] = [];
+  let idleGenerations = "{}";
   return {
     async findPassEnd() {
       const [last] = await db
@@ -2031,6 +2755,13 @@ export function createLifecycleSweepQueries(
             retention.map((target) => [target.allocationId, target.generation]),
           ),
         );
+        const idle = getIdleStandbyCandidates();
+        idleIds = idle.map((target) => target.allocationId);
+        idleGenerations = JSON.stringify(
+          Object.fromEntries(
+            idle.map((target) => [target.allocationId, target.generation]),
+          ),
+        );
       }
       const at = now();
       const inFlight = getStandbyCommandsInFlight();
@@ -2039,13 +2770,19 @@ export function createLifecycleSweepQueries(
         activeRunIds,
         retentionIds,
         retentionGenerations,
+        idleIds,
+        idleGenerations,
         standbyInFlight: inFlight.enterStandby,
+        confirmingInFlight: inFlight.confirming,
         wakesInFlight: inFlight.wake,
         now: at,
         pendingCutoff: new Date(at.getTime() - PENDING_PROJECTION_GRACE_MS),
       };
       for (const [index, branch] of branches.entries()) {
-        if (branch.name === "retention" && retentionIds.length === 0) {
+        if (
+          (branch.name === "retention" && retentionIds.length === 0) ||
+          (branch.name === "idleStandby" && idleIds.length === 0)
+        ) {
           candidates[index] = null;
           continue;
         }

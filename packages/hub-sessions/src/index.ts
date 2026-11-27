@@ -55,6 +55,7 @@ export {
   WorkflowControlHistoryPendingError,
   WorkflowControlInitializingError,
   WorkflowControlNotConnectedError,
+  WorkflowControlNotIdleError,
   WorkflowControlRejectedError,
   WorkflowControlTimeoutError,
   WorkflowControlUnconfirmedError,

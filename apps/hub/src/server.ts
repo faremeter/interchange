@@ -19,8 +19,8 @@ import {
   LifecycleDuration,
   lifecycleDurationMs,
   parseAdapterManifestEnv,
-  type ResolvedWorkflowLifecyclePolicy,
   type SidecarCapabilityRule,
+  type WorkflowLifecycleDefaults,
 } from "@intx/types";
 import {
   createApp,
@@ -236,7 +236,7 @@ export async function createHubServer({
     }
   }
 
-  const defaultLifecyclePolicy: ResolvedWorkflowLifecyclePolicy = {
+  const defaultLifecyclePolicy: WorkflowLifecycleDefaults = {
     maxLifetime: readLifecycleDurationEnv(
       "WORKFLOW_DEFAULT_MAX_LIFETIME",
       "7d",

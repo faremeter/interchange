@@ -54,6 +54,7 @@ import {
   WorkflowControlHistoryPendingError,
   WorkflowControlInitializingError,
   WorkflowControlNotConnectedError,
+  WorkflowControlNotIdleError,
   WorkflowControlRejectedError,
   WorkflowControlTimeoutError,
   WorkflowControlUnconfirmedError,
@@ -4080,8 +4081,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     describe("standby", () => {
       type StandbyCall = {
-        action: "standby" | "wake";
+        action: "standby" | "idle-check" | "idle-standby" | "wake";
         target: { allocationId: string; generation: number };
+        minQuietMs?: number;
         answer: PromiseWithResolvers<{ wakeAt?: string }>;
         answered: () => void;
       };
@@ -4099,21 +4101,27 @@ describe.skipIf(!harnessDbEnvAvailable())(
             WorkflowLifecycleServiceDeps,
             "db" | "sendControl" | "historyReceives"
           >
-        > = {},
+        > & { idleConnected?: boolean } = {},
       ) {
         const calls: StandbyCall[] = [];
         const callWaiters: (() => void)[] = [];
         let recorded = Promise.withResolvers<undefined>();
-        const binding = { held: true };
+        const binding = {
+          held: true,
+          generation: 1,
+          idleConnected: opts.idleConnected ?? true,
+        };
         const call = (
           action: StandbyCall["action"],
           target: StandbyCall["target"],
           answered: (() => void) | undefined,
+          minQuietMs?: number,
         ) => {
           const answer = Promise.withResolvers<{ wakeAt?: string }>();
           calls.push({
             action,
             target,
+            ...(minQuietMs !== undefined ? { minQuietMs } : {}),
             answer,
             answered: answered ?? (() => undefined),
           });
@@ -4125,15 +4133,41 @@ describe.skipIf(!harnessDbEnvAvailable())(
           standbyRouter: {
             putAllocationInStandby: (target, _timeoutMs, answered) =>
               call("standby", target, answered),
+            putAllocationInStandbyIfIdle: (
+              target,
+              minQuietMs,
+              _timeoutMs,
+              answered,
+            ) => call("idle-standby", target, answered, minQuietMs),
+            checkAllocationIdle: async (target, minQuietMs) => {
+              await call("idle-check", target, undefined, minQuietMs);
+            },
             wakeAllocation: async (target, _timeoutMs, answered) => {
               await call("wake", target, answered);
             },
+            getIdleStandbyCandidates: () =>
+              binding.held && binding.idleConnected
+                ? [
+                    {
+                      allocationId,
+                      generation: binding.generation,
+                      sidecarId: "sc-1",
+                      runId,
+                    },
+                  ]
+                : [],
             holdsAllocatedBinding: () => binding.held,
           },
           onStandbyCommandSettled: () => {
             recorded.resolve(undefined);
           },
         });
+        // Settle a command and wait until the Hub has recorded its answer.
+        const answer = async (settle: () => void) => {
+          recorded = Promise.withResolvers<undefined>();
+          settle();
+          await recorded.promise;
+        };
         return {
           lifecycle,
           calls,
@@ -4144,11 +4178,16 @@ describe.skipIf(!harnessDbEnvAvailable())(
               await new Promise<void>((resolve) => callWaiters.push(resolve));
             }
           },
-          // Settle a command and wait until the Hub has recorded its answer.
-          async answer(settle: () => void) {
-            recorded = Promise.withResolvers<undefined>();
-            settle();
-            await recorded.promise;
+          answer,
+          // Answer the idle check sent last as idle, and wait until the Hub
+          // has sent the standby that follows or decided against it.
+          async passIdleCheck() {
+            const check = calls.at(-1);
+            if (check?.action !== "idle-check")
+              throw new Error("the last command sent is not an idle check");
+            await answer(() => {
+              check.answer.resolve({});
+            });
           },
         };
       }
@@ -5145,6 +5184,20 @@ describe.skipIf(!harnessDbEnvAvailable())(
         expect((await standby())?.state).toBe("awake");
       });
 
+      test("replacement capacity starts awake: an automatic standby still confirming is cleared", async () => {
+        await h.db
+          .update(workflowRun)
+          .set({ standbyState: "confirming", standbyStateAt: current })
+          .where(eq(workflowRun.id, runId));
+        expect((await beginReplacement())?.status).toBe("replacing");
+        expect((await standby())?.state).toBe("awake");
+        const [row] = await h.db
+          .select({ standbyState: workflowRun.standbyState })
+          .from(workflowRun)
+          .where(eq(workflowRun.id, runId));
+        expect(row?.standbyState).toBeNull();
+      });
+
       test("cancellation ends a standby request, and a stopping or ended run refuses one", async () => {
         const lifecycle = service();
         await lifecycle.requestStandby(tenantId, runId);
@@ -5385,6 +5438,681 @@ describe.skipIf(!harnessDbEnvAvailable())(
             reason: "Woken by mail",
           });
         }
+      });
+
+      test("standbyAfter defers before createdAt + standbyAfter, reschedules from quietForMs, and records standby once quiet", async () => {
+        await h.db
+          .update(workflowRun)
+          .set({
+            lifecyclePolicy: { standbyAfter: "10s" },
+            createdAt: current,
+          })
+          .where(eq(workflowRun.id, runId));
+        const { lifecycle, calls, actions, answer, passIdleCheck } =
+          standbyService();
+
+        // Brand-new deployment: the sweep schedules the first check for
+        // createdAt + 10s and sends nothing.
+        expect(await nextPass(lifecycle)).toBe(true);
+        expect(actions()).toEqual([]);
+
+        // Still before 10s: sweep skips it.
+        current = new Date(current.getTime() + 5_000);
+        expect(await lifecycle.reconcileNext()).toBe(false);
+        expect(actions()).toEqual([]);
+
+        // Past 10s: sweep asks whether it has been quiet for 10s, and the
+        // status does not change for the question.
+        const before = await standbyOn(lifecycle);
+        current = new Date(current.getTime() + 5_000);
+        expect(await lifecycle.reconcileNext()).toBe(true);
+        expect(actions()).toEqual(["idle-check"]);
+        expect(calls[0]?.minQuietMs).toBe(10_000);
+        expect(await standbyOn(lifecycle)).toEqual(before);
+
+        // Sidecar reports quiet for 4s: Hub schedules next check in 6s.
+        await answer(() => {
+          calls[0]?.answer.reject(
+            new WorkflowControlNotIdleError("not idle", 4_000),
+          );
+        });
+        expect(await standbyOn(lifecycle)).toEqual(before);
+
+        current = new Date(current.getTime() + 5_000);
+        expect(await lifecycle.reconcileNext()).toBe(false);
+        expect(actions()).toEqual(["idle-check"]);
+
+        // At +6s after refusal: Hub asks again, and an idle answer has it put
+        // the deployment in standby.
+        current = new Date(current.getTime() + 1_000);
+        expect(await lifecycle.reconcileNext()).toBe(true);
+        await passIdleCheck();
+        expect(actions()).toEqual(["idle-check", "idle-check", "idle-standby"]);
+        expect(calls[2]?.minQuietMs).toBe(10_000);
+        expect((await standbyOn(lifecycle))?.state).toBe("entering");
+        await answer(() => {
+          calls[2]?.answered();
+          calls[2]?.answer.resolve({ wakeAt: "2026-10-02T00:00:00.000Z" });
+        });
+        expect(await standbyOn(lifecycle)).toMatchObject({
+          state: "standby",
+          wakeAt: "2026-10-02T00:00:00.000Z",
+          reason:
+            "Every run of the deployment waited on input from outside long enough for the Hub to put it in standby",
+        });
+
+        // Once in standby, further passes do not check again.
+        current = new Date(current.getTime() + 20_000);
+        expect(await lifecycle.reconcileNext()).toBe(false);
+        expect(actions()).toHaveLength(3);
+      });
+
+      test("wake returns 204 while only an idle check is out, and returns 202 and wakes once an automatic standby is in flight or awaiting confirmation", async () => {
+        await h.db
+          .update(workflowRun)
+          .set({
+            lifecyclePolicy: { standbyAfter: "10s" },
+            createdAt: new Date(current.getTime() - 20_000),
+          })
+          .where(eq(workflowRun.id, runId));
+        const { lifecycle, calls, actions, answer, passIdleCheck, untilCalls } =
+          standbyService();
+
+        // Awake with no automatic standby pending: wake returns "settled" (204)
+        // as a no-op without suppressing the due idle check, and the same
+        // while the check is out, which stops nothing.
+        expect(await lifecycle.requestWake(tenantId, runId)).toBe("settled");
+        expect(await nextPass(lifecycle)).toBe(true);
+        expect(actions()).toEqual(["idle-check"]);
+        expect(await lifecycle.requestWake(tenantId, runId)).toBe("settled");
+
+        // Once the check found it idle and the standby is in flight, wake
+        // returns "pending" (202) and immediately sends wake.
+        await passIdleCheck();
+        expect(actions()).toEqual(["idle-check", "idle-standby"]);
+        expect(await lifecycle.requestWake(tenantId, runId)).toBe("pending");
+        await untilCalls(3);
+        expect(actions()).toEqual(["idle-check", "idle-standby", "wake"]);
+
+        // Even if the in-flight idle standby resolves first, the row is
+        // "waking", so it does not overwrite it.
+        await answer(() => {
+          calls[1]?.answered();
+          calls[1]?.answer.resolve({});
+        });
+        expect((await standbyOn(lifecycle))?.state).toBe("waking");
+        await answer(() => {
+          calls[2]?.answered();
+          calls[2]?.answer.resolve({});
+        });
+        expect((await standbyOn(lifecycle))?.state).toBe("awake");
+
+        // After wake settles, idle wait starts over (+10s).
+        current = new Date(current.getTime() + 9_000);
+        expect(await lifecycle.reconcileNext()).toBe(false);
+        current = new Date(current.getTime() + 1_000);
+        expect(await lifecycle.reconcileNext()).toBe(true);
+        await passIdleCheck();
+        expect(actions().slice(3)).toEqual(["idle-check", "idle-standby"]);
+
+        // History pending keeps confirming persisted (reported as "entering"),
+        // so wake returns 202 and sends "wake".
+        await answer(() => {
+          calls[4]?.answered();
+          calls[4]?.answer.reject(
+            new WorkflowControlHistoryPendingError("refs/heads/main"),
+          );
+        });
+        expect((await standbyOn(lifecycle))?.state).toBe("entering");
+        expect(await lifecycle.requestWake(tenantId, runId)).toBe("pending");
+        expect(await nextPass(lifecycle)).toBe(true);
+        expect(actions().slice(5)).toEqual(["wake"]);
+        await answer(() => {
+          calls[5]?.answered();
+          calls[5]?.answer.resolve({});
+        });
+        expect((await standbyOn(lifecycle))?.state).toBe("awake");
+
+        // An initializing error (such as reportDeploymentRefTips failing after
+        // the sidecar stopped the child) also keeps confirming persisted, so
+        // status reports "entering" and wake returns 202 and wakes the child.
+        current = new Date(current.getTime() + 10_000);
+        expect(await lifecycle.reconcileNext()).toBe(true);
+        await passIdleCheck();
+        await answer(() => {
+          calls[7]?.answered();
+          calls[7]?.answer.reject(new WorkflowControlInitializingError());
+        });
+        expect((await standbyOn(lifecycle))?.state).toBe("entering");
+        expect(await lifecycle.requestWake(tenantId, runId)).toBe("pending");
+        expect(await nextPass(lifecycle)).toBe(true);
+        expect(actions().slice(6)).toEqual([
+          "idle-check",
+          "idle-standby",
+          "wake",
+        ]);
+        await answer(() => {
+          calls[8]?.answered();
+          calls[8]?.answer.resolve({});
+        });
+        expect((await standbyOn(lifecycle))?.state).toBe("awake");
+      });
+
+      test("a busy idle check leaves the status alone, and durable confirming state lets another Hub wake or observe entering and survives restart/reconnect", async () => {
+        await h.db
+          .update(workflowRun)
+          .set({
+            lifecyclePolicy: { standbyAfter: "10s" },
+            createdAt: new Date(current.getTime() - 20_000),
+            standbyStateAt: new Date(current.getTime() - 20_000),
+            standbyReason: "Woken by mail",
+          })
+          .where(eq(workflowRun.id, runId));
+        const hubA = standbyService();
+        const hubB = service();
+        const settleLast = (settle: (call: StandbyCall) => void) =>
+          hubA.answer(() => {
+            const call = hubA.calls.at(-1);
+            if (call === undefined) throw new Error("no command was sent");
+            call.answered();
+            settle(call);
+          });
+
+        // A busy (NotIdle) check records nothing, so no Hub ever shows it.
+        const initial = await standbyOn(hubB);
+        expect(await nextPass(hubA.lifecycle)).toBe(true);
+        expect(hubA.actions()).toEqual(["idle-check"]);
+        expect(await standbyOn(hubB)).toEqual(initial);
+        await settleLast((call) => {
+          call.answer.reject(
+            new WorkflowControlNotIdleError("still working", 0),
+          );
+        });
+        expect(await standbyOn(hubB)).toEqual(initial);
+
+        // While the standby is in flight the status says why it enters
+        // standby instead of the earlier reason; a standby the final check
+        // refuses clears confirming and restores the status as it was.
+        current = new Date(current.getTime() + 10_000);
+        expect(await hubA.lifecycle.reconcileNext()).toBe(true);
+        await hubA.passIdleCheck();
+        expect(hubA.actions()).toEqual([
+          "idle-check",
+          "idle-check",
+          "idle-standby",
+        ]);
+        expect(initial?.reason).toBe("Woken by mail");
+        expect(await standbyOn(hubB)).toMatchObject({
+          state: "entering",
+          reason:
+            "Every run of the deployment waited on input from outside long enough, so the Hub is putting it in standby",
+        });
+        await settleLast((call) => {
+          call.answer.reject(new WorkflowControlNotIdleError("ran again", 0));
+        });
+        expect(await standbyOn(hubB)).toEqual(initial);
+
+        // Hub A sends idle-standby (persisting confirming); Hub B sees entering
+        // and its POST .../wake records waking (202). Hub A's late resolution
+        // does not clobber waking, and Hub A's sweep carries out the wake.
+        current = new Date(current.getTime() + 10_000);
+        expect(await hubA.lifecycle.reconcileNext()).toBe(true);
+        await hubA.passIdleCheck();
+        expect(hubA.actions().slice(3)).toEqual(["idle-check", "idle-standby"]);
+        expect((await standbyOn(hubB))?.state).toBe("entering");
+        expect(await hubB.requestWake(tenantId, runId)).toBe("pending");
+
+        await settleLast((call) => {
+          call.answer.resolve({});
+        });
+        expect((await standbyOn(hubA.lifecycle))?.state).toBe("waking");
+        expect(await nextPass(hubA.lifecycle)).toBe(true);
+        expect(hubA.actions().slice(5)).toEqual(["wake"]);
+        await settleLast((call) => {
+          call.answer.resolve({});
+        });
+        expect((await standbyOn(hubA.lifecycle))?.state).toBe("awake");
+
+        // When Hub A hits HistoryPending or Initializing (leaving confirming in
+        // Postgres), Hub B sees entering and returns 202, and Hub A wakes on
+        // the next pass without waiting for retry backoff.
+        for (const error of [
+          new WorkflowControlHistoryPendingError("refs/heads/main"),
+          new WorkflowControlInitializingError(),
+        ]) {
+          current = new Date(current.getTime() + 10_000);
+          expect(await hubA.lifecycle.reconcileNext()).toBe(true);
+          await hubA.passIdleCheck();
+          expect(hubA.actions().at(-1)).toBe("idle-standby");
+          await settleLast((call) => {
+            call.answer.reject(error);
+          });
+          expect((await standbyOn(hubB))?.state).toBe("entering");
+          expect(await hubB.requestWake(tenantId, runId)).toBe("pending");
+          expect(await nextPass(hubA.lifecycle)).toBe(true);
+          expect(hubA.actions().at(-1)).toBe("wake");
+          await settleLast((call) => {
+            call.answer.resolve({});
+          });
+          expect((await standbyOn(hubA.lifecycle))?.state).toBe("awake");
+        }
+
+        // After a Hub restart while confirming is persisted (child stopped on
+        // the sidecar), a reconnect hello reporting inStandby: true does not
+        // wake it as unrequested; the new Hub retries standby-if-idle, with no
+        // check first, and records standby.
+        current = new Date(current.getTime() + 10_000);
+        expect(await hubA.lifecycle.reconcileNext()).toBe(true);
+        await hubA.passIdleCheck();
+        await settleLast((call) => {
+          call.answer.reject(
+            new WorkflowControlHistoryPendingError("refs/heads/main"),
+          );
+        });
+
+        const restartedHub = standbyService();
+        await restartedHub.lifecycle.noteDeploymentInStandby({
+          allocationId,
+          generation: 1,
+          inStandby: true,
+        });
+        expect(restartedHub.actions()).toEqual(["idle-standby"]);
+        expect((await standbyOn(restartedHub.lifecycle))?.state).toBe(
+          "entering",
+        );
+        await restartedHub.answer(() => {
+          restartedHub.calls[0]?.answered();
+          restartedHub.calls[0]?.answer.resolve({});
+        });
+        expect((await standbyOn(restartedHub.lifecycle))?.state).toBe(
+          "standby",
+        );
+      });
+
+      test("a Hub that finds a row confirming says why in place of its earlier reason, and keeps that reason when the standby is refused", async () => {
+        const confirmingAt = new Date(current.getTime() - 5_000);
+        await h.db
+          .update(workflowRun)
+          .set({
+            lifecyclePolicy: { standbyAfter: "10s" },
+            createdAt: new Date(current.getTime() - 20_000),
+            standbyState: "confirming",
+            standbyStateAt: confirmingAt,
+            standbyReason: "Woken by mail",
+          })
+          .where(eq(workflowRun.id, runId));
+        const { lifecycle, calls, actions, answer } = standbyService();
+
+        expect(await standbyOn(lifecycle)).toMatchObject({
+          state: "entering",
+          reason:
+            "Every run of the deployment waited on input from outside long enough, so the Hub is putting it in standby",
+        });
+        expect(await nextPass(lifecycle)).toBe(true);
+        expect(actions()).toEqual(["idle-standby"]);
+        await answer(() => {
+          calls[0]?.answered();
+          calls[0]?.answer.reject(
+            new WorkflowControlNotIdleError("ran again", 0),
+          );
+        });
+        // This Hub never saw the status from before the standby, so
+        // `changedAt` stays at the time the standby began.
+        expect(await standbyOn(lifecycle)).toEqual({
+          state: "awake",
+          changedAt: confirmingAt.toISOString(),
+          wakeAt: null,
+          reason: "Woken by mail",
+        });
+      });
+
+      test("unexpected idle standby refusals back off, expire after 16x standbyAfter, and stop after three until an explicit standby succeeds", async () => {
+        await h.db
+          .update(workflowRun)
+          .set({
+            lifecyclePolicy: { standbyAfter: "10s" },
+            createdAt: new Date(current.getTime() - 20_000),
+          })
+          .where(eq(workflowRun.id, runId));
+        const { lifecycle, calls, actions, answer, passIdleCheck } =
+          standbyService();
+        // The sidecar finds the deployment idle, then refuses the standby.
+        const refuseStandby = async (reason: string) => {
+          await passIdleCheck();
+          await answer(() => {
+            const standby = calls.at(-1);
+            standby?.answered();
+            standby?.answer.reject(new WorkflowControlRejectedError(reason));
+          });
+        };
+
+        // Refusal 1, of the check itself -> backs off 20s (10s * 2^1), then
+        // expires once more than 16 * standbyAfter (160s) passes with no
+        // further refusals.
+        expect(await nextPass(lifecycle)).toBe(true);
+        await answer(() => {
+          calls[0]?.answer.reject(
+            new WorkflowControlRejectedError("transient hiccup"),
+          );
+        });
+        current = new Date(current.getTime() + 19_000);
+        expect(await lifecycle.reconcileNext()).toBe(false);
+        current = new Date(current.getTime() + 160_000);
+        expect(await lifecycle.reconcileNext()).toBe(true);
+
+        // Fresh refusal 1 after expiry -> backs off 20s again (not 40s).
+        await refuseStandby("disk full");
+        expect((await standbyOn(lifecycle))?.state).toBe("awake");
+        current = new Date(current.getTime() + 19_000);
+        expect(await lifecycle.reconcileNext()).toBe(false);
+        current = new Date(current.getTime() + 1_000);
+        expect(await lifecycle.reconcileNext()).toBe(true);
+
+        // Refusal 2 within the window -> backs off 40s (10s * 2^2)
+        await refuseStandby("disk full");
+        current = new Date(current.getTime() + 39_000);
+        expect(await lifecycle.reconcileNext()).toBe(false);
+        current = new Date(current.getTime() + 1_000);
+        expect(await lifecycle.reconcileNext()).toBe(true);
+
+        // Refusal 3 -> circuit-breaker stops automatic standby for this
+        // generation
+        await refuseStandby("disk full");
+        current = new Date(current.getTime() + 600_000);
+        expect(await lifecycle.reconcileNext()).toBe(false);
+        expect(actions()).toEqual([
+          "idle-check",
+          "idle-check",
+          "idle-standby",
+          "idle-check",
+          "idle-standby",
+          "idle-check",
+          "idle-standby",
+        ]);
+
+        // An explicit standby that succeeds resets the circuit-breaker.
+        expect(await lifecycle.requestStandby(tenantId, runId)).toBe("pending");
+        expect(await nextPass(lifecycle)).toBe(true);
+        expect(actions().at(-1)).toBe("standby");
+        await answer(() => {
+          calls[7]?.answered();
+          calls[7]?.answer.resolve({});
+        });
+        await lifecycle.noteDeploymentInStandby({
+          allocationId,
+          generation: 1,
+          inStandby: false,
+          reason: "Woken by mail",
+        });
+        current = new Date(current.getTime() + 10_000);
+        expect(await lifecycle.reconcileNext()).toBe(true);
+        await passIdleCheck();
+        expect(actions().slice(8)).toEqual(["idle-check", "idle-standby"]);
+        await answer(() => {
+          calls[9]?.answered();
+          calls[9]?.answer.resolve({});
+        });
+        expect((await standbyOn(lifecycle))?.state).toBe("standby");
+      });
+
+      test("an idle check that gets no answer counts as a refusal, so a sidecar that drops the command stops being asked", async () => {
+        await h.db
+          .update(workflowRun)
+          .set({
+            lifecyclePolicy: { standbyAfter: "10s" },
+            createdAt: new Date(current.getTime() - 20_000),
+          })
+          .where(eq(workflowRun.id, runId));
+        const { lifecycle, calls, actions, answer } = standbyService();
+        const timeOut = () =>
+          answer(() => {
+            calls
+              .at(-1)
+              ?.answer.reject(
+                new WorkflowControlTimeoutError("Workflow control timed out"),
+              );
+          });
+
+        // Backs off 20s, then 40s, as for refusals, and stops at the third.
+        expect(await nextPass(lifecycle)).toBe(true);
+        await timeOut();
+        current = new Date(current.getTime() + 19_000);
+        expect(await lifecycle.reconcileNext()).toBe(false);
+        current = new Date(current.getTime() + 1_000);
+        expect(await lifecycle.reconcileNext()).toBe(true);
+        await timeOut();
+        current = new Date(current.getTime() + 40_000);
+        expect(await lifecycle.reconcileNext()).toBe(true);
+        await timeOut();
+        current = new Date(current.getTime() + 600_000);
+        expect(await lifecycle.reconcileNext()).toBe(false);
+        expect(actions()).toEqual(["idle-check", "idle-check", "idle-check"]);
+        expect(await standbyOn(lifecycle)).toMatchObject({
+          state: "awake",
+          reason: null,
+        });
+      });
+
+      test("a stale idle-standby retry backoff on Hub A does not delay a wake recorded on Hub B", async () => {
+        await h.db
+          .update(workflowRun)
+          .set({
+            lifecyclePolicy: { standbyAfter: "10s" },
+            createdAt: new Date(current.getTime() - 20_000),
+          })
+          .where(eq(workflowRun.id, runId));
+        const hubA = standbyService();
+        const hubB = service();
+        const historyPending = () =>
+          hubA.answer(() => {
+            const standby = hubA.calls.at(-1);
+            standby?.answered();
+            standby?.answer.reject(
+              new WorkflowControlHistoryPendingError("refs/heads/main"),
+            );
+          });
+
+        // Five answers without the history leave Hub A's automatic standby
+        // backed off for 16s.
+        expect(await nextPass(hubA.lifecycle)).toBe(true);
+        await hubA.passIdleCheck();
+        await historyPending();
+        for (const stepMs of [1_000, 2_000, 4_000, 8_000]) {
+          current = new Date(current.getTime() + stepMs);
+          expect(await nextPass(hubA.lifecycle)).toBe(true);
+          expect(hubA.actions().at(-1)).toBe("idle-standby");
+          await historyPending();
+        }
+
+        expect(await hubB.requestWake(tenantId, runId)).toBe("pending");
+        expect(await nextPass(hubA.lifecycle)).toBe(true);
+        const wakeIdx = hubA.calls.length - 1;
+        expect(hubA.actions()[wakeIdx]).toBe("wake");
+        await hubA.answer(() => {
+          hubA.calls[wakeIdx]?.answered();
+          hubA.calls[wakeIdx]?.answer.resolve({});
+        });
+        expect((await standbyOn(hubA.lifecycle))?.state).toBe("awake");
+      });
+
+      test("an idle answer does not wait on a locked allocation row, and the Hub checks again after a wait that grows", async () => {
+        await h.db
+          .update(workflowRun)
+          .set({
+            lifecyclePolicy: { standbyAfter: "10s" },
+            createdAt: new Date(current.getTime() - 20_000),
+          })
+          .where(eq(workflowRun.id, runId));
+        const { lifecycle, calls, actions, answer, passIdleCheck } =
+          standbyService();
+        expect(await nextPass(lifecycle)).toBe(true);
+        expect(actions()).toEqual(["idle-check"]);
+
+        // Pack ingestion holds the allocation row like this while it moves
+        // refs.
+        const locked = Promise.withResolvers<undefined>();
+        const releaseLock = Promise.withResolvers<undefined>();
+        const lockHolder = h.db.transaction(async (tx) => {
+          await tx
+            .select({ id: sidecarAllocation.id })
+            .from(sidecarAllocation)
+            .where(eq(sidecarAllocation.id, allocationId))
+            .for("update");
+          locked.resolve(undefined);
+          await releaseLock.promise;
+        });
+        await locked.promise;
+        try {
+          // The first skipped write waits 1s, the second 2s.
+          await passIdleCheck();
+          expect(actions()).toEqual(["idle-check"]);
+          expect((await standbyOn(lifecycle))?.state).toBe("awake");
+          expect(await nextPass(lifecycle)).toBe(true);
+          await passIdleCheck();
+          expect(actions()).toEqual(["idle-check", "idle-check"]);
+          expect(await nextPass(lifecycle)).toBe(false);
+          expect(actions()).toHaveLength(2);
+        } finally {
+          releaseLock.resolve(undefined);
+          await lockHolder;
+        }
+
+        expect(await nextPass(lifecycle)).toBe(true);
+        await passIdleCheck();
+        expect(actions().slice(2)).toEqual(["idle-check", "idle-standby"]);
+        await answer(() => {
+          calls[3]?.answered();
+          calls[3]?.answer.resolve({});
+        });
+        expect((await standbyOn(lifecycle))?.state).toBe("standby");
+      });
+
+      test("an explicit standby during an automatic standby supersedes it", async () => {
+        await h.db
+          .update(workflowRun)
+          .set({
+            lifecyclePolicy: { standbyAfter: "10s" },
+            createdAt: new Date(current.getTime() - 20_000),
+          })
+          .where(eq(workflowRun.id, runId));
+        const { lifecycle, calls, actions, answer, passIdleCheck, untilCalls } =
+          standbyService();
+        expect(await nextPass(lifecycle)).toBe(true);
+        await passIdleCheck();
+        expect(actions()).toEqual(["idle-check", "idle-standby"]);
+        expect(await lifecycle.requestStandby(tenantId, runId)).toBe("pending");
+        await untilCalls(3);
+        expect(actions()).toEqual(["idle-check", "idle-standby", "standby"]);
+        await answer(() => {
+          calls[1]?.answered();
+          calls[1]?.answer.reject(new WorkflowControlNotIdleError("busy", 0));
+        });
+        expect((await standbyOn(lifecycle))?.state).toBe("entering");
+        await answer(() => {
+          calls[2]?.answered();
+          calls[2]?.answer.resolve({});
+        });
+        expect(await standbyOn(lifecycle)).toMatchObject({
+          state: "standby",
+          reason: null,
+        });
+      });
+
+      test("a cancellation during an automatic standby is not overwritten by its answer", async () => {
+        await h.db
+          .update(workflowRun)
+          .set({
+            lifecyclePolicy: { standbyAfter: "10s" },
+            createdAt: new Date(current.getTime() - 20_000),
+          })
+          .where(eq(workflowRun.id, runId));
+        const { lifecycle, calls, actions, answer, passIdleCheck } =
+          standbyService();
+        expect(await nextPass(lifecycle)).toBe(true);
+        await passIdleCheck();
+        expect(actions()).toEqual(["idle-check", "idle-standby"]);
+        expect(
+          await lifecycle.requestCancellation(tenantId, runId, "stop it"),
+        ).toBe("pending");
+        await answer(() => {
+          calls[1]?.answered();
+          calls[1]?.answer.resolve({});
+        });
+        const [row] = await h.db
+          .select({ s: workflowRun.standbyState })
+          .from(workflowRun)
+          .where(eq(workflowRun.id, runId));
+        expect(row?.s).toBeNull();
+      });
+
+      test("a timed-out automatic standby stays confirming, says why, and is sent again without a new check", async () => {
+        await h.db
+          .update(workflowRun)
+          .set({
+            lifecyclePolicy: { standbyAfter: "10s" },
+            createdAt: new Date(current.getTime() - 20_000),
+          })
+          .where(eq(workflowRun.id, runId));
+        const { lifecycle, calls, actions, answer, passIdleCheck } =
+          standbyService();
+        expect(await nextPass(lifecycle)).toBe(true);
+        await passIdleCheck();
+        await answer(() => {
+          calls[1]?.answer.reject(
+            new WorkflowControlTimeoutError("Workflow control timed out"),
+          );
+        });
+        expect(await standbyOn(lifecycle)).toMatchObject({
+          state: "entering",
+          reason:
+            "The Hub could not put the deployment in standby for the policy's standbyAfter yet and keeps asking: Workflow control timed out",
+        });
+        expect(await lifecycle.reconcileNext()).toBe(false);
+        expect(await nextPass(lifecycle)).toBe(true);
+        expect(actions()).toEqual([
+          "idle-check",
+          "idle-standby",
+          "idle-standby",
+        ]);
+        await answer(() => {
+          calls[2]?.answered();
+          calls[2]?.answer.resolve({});
+        });
+        expect((await standbyOn(lifecycle))?.state).toBe("standby");
+      });
+
+      test("a disconnect during an automatic standby keeps it confirming, and a wake goes out once the sidecar is back", async () => {
+        await h.db
+          .update(workflowRun)
+          .set({
+            lifecyclePolicy: { standbyAfter: "10s" },
+            createdAt: new Date(current.getTime() - 20_000),
+          })
+          .where(eq(workflowRun.id, runId));
+        const { lifecycle, calls, actions, answer, passIdleCheck, binding } =
+          standbyService();
+        expect(await nextPass(lifecycle)).toBe(true);
+        await passIdleCheck();
+        binding.held = false;
+        await answer(() => {
+          calls[1]?.answer.reject(
+            new WorkflowControlUnreachableError("connection closed"),
+          );
+        });
+        for (let i = 0; i < 5; i++) {
+          current = new Date(current.getTime() + 30_000);
+          await lifecycle.reconcileNext();
+        }
+        expect(actions()).toEqual(["idle-check", "idle-standby"]);
+        expect((await standbyOn(lifecycle))?.state).toBe("entering");
+        expect(await lifecycle.requestWake(tenantId, runId)).toBe("pending");
+        binding.held = true;
+        await lifecycle.noteDeploymentInStandby({
+          allocationId,
+          generation: 1,
+          inStandby: true,
+        });
+        expect(actions().at(-1)).toBe("wake");
       });
     });
   },

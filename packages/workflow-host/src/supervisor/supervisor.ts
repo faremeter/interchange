@@ -420,21 +420,35 @@ export interface WorkflowSupervisor {
   credentialDelivery(): CredentialDelivery | null;
   /**
    * Stop the child once every run only waits on input from outside, keeping
-   * the deployment's mail subscription and address registration. The child
-   * reports when it is quiet; dispatch and signals go on meanwhile. Then the
-   * supervisor stops handing it input, asks again, and holds the child's
-   * writes until the child is stopped. A held write means the child is
-   * working again: before the stop begins the standby attempt waits for quiet
-   * once more, and after it the child is woken for that work. Resolves when
-   * the child is stopped. Rejects with `StandbyAbandonedError` when `wake`,
-   * `abandonStandby`, a cancellation or a shutdown calls it off, and with
-   * `StandbyRefusedError` when the child restarts, the run ends, or mail
-   * waits in the inbox.
+   * the deployment's mail subscription and address registration. With
+   * `minQuietMs`, refuse immediately with `StandbyNotIdleError` unless every
+   * run has already been quiet for at least that long and no timer is due
+   * within it (or the child is already in standby), without waiting for work
+   * in progress to finish. Otherwise the child reports when it is quiet;
+   * dispatch and signals go on meanwhile. Then the supervisor stops handing it
+   * input, asks again, and holds the child's writes until the child is
+   * stopped. A held write means the child is working again: before the stop
+   * begins an explicit attempt waits for quiet once more (and a conditional
+   * attempt refuses with `StandbyNotIdleError`), and after it the child is
+   * woken for that work. Resolves when the child is stopped. Rejects with
+   * `StandbyAbandonedError` when `wake`, `abandonStandby`, a cancellation, a
+   * shutdown or, for a conditional attempt, an explicit `enterStandby` calls
+   * it off, and with `StandbyRefusedError` when the child restarts, the run
+   * ends, or mail waits in the inbox.
    *
    * A supervisor in standby respawns its child for mail, a signal, a
    * cancellation, its earliest pending timer, or `wake`.
    */
-  enterStandby(): Promise<StandbyOutcome>;
+  enterStandby(opts?: { minQuietMs?: number }): Promise<StandbyOutcome>;
+  /**
+   * Whether `enterStandby({ minQuietMs })` would go on to its final check,
+   * without starting an attempt: nothing is stopped or held back. Resolves
+   * when every run has been quiet for at least `minQuietMs` with no timer due
+   * within it, or the child is in standby already, and rejects as that attempt
+   * would before its final check, with `StandbyDeferredError` while a standby
+   * attempt runs.
+   */
+  checkIdle(minQuietMs: number): Promise<void>;
   /** Abandon a standby attempt in progress, or respawn a child in standby. */
   wake(): Promise<void>;
   /**
@@ -466,16 +480,37 @@ export class StandbyRefusedError extends Error {
 }
 
 /**
- * A standby attempt refused because the child is starting or restarting; it can
- * be asked for again once the child runs.
+ * A standby attempt or idle check put off: the child is starting or
+ * restarting, or another attempt or check is in the way. It can be asked for
+ * again.
  */
 export class StandbyDeferredError extends StandbyRefusedError {
   override name = "StandbyDeferredError";
 }
 
-/** A standby attempt called off by a wake, a cancellation, a shutdown or its caller. */
+/**
+ * A standby attempt called off by a wake, a cancellation, a shutdown, its
+ * caller or, for a conditional attempt, an explicit standby.
+ */
 export class StandbyAbandonedError extends StandbyRefusedError {
   override name = "StandbyAbandonedError";
+}
+
+/**
+ * A conditional standby attempt (`minQuietMs`) or idle check refused because
+ * the deployment is busy, its runs have not been quiet long enough, a timer is
+ * due within `minQuietMs`, input still waits for the child, or the run has
+ * ended. `quietForMs` is how long the child had been quiet, 0 in every case
+ * but the second.
+ */
+export class StandbyNotIdleError extends StandbyRefusedError {
+  override name = "StandbyNotIdleError";
+  constructor(
+    readonly quietForMs: number,
+    message = "its runs have not waited long enough",
+  ) {
+    super(message);
+  }
 }
 
 /** A dispatch gave up waiting for its run to park or end. */
@@ -1282,8 +1317,23 @@ export function createWorkflowSupervisor(
     // What the child reported it is parked on, before the stop. A hub
     // re-establishment while the child stops re-registers these.
     correlations: ParkedCorrelations | null;
+    // Set for a conditional attempt: refuse with `StandbyNotIdleError` unless
+    // every run has been quiet for at least this many milliseconds.
+    readonly minQuietMs?: number;
   };
   let standbyAttempt: StandbyAttempt | null = null;
+  // What asking the child whether it is quiet needs of who asks.
+  type QuietCheck = Pick<
+    StandbyAttempt,
+    "generation" | "abandon" | "childExited" | "minQuietMs"
+  >;
+  // An idle check in progress. The child answers only its latest quiet check,
+  // so one is out at a time and a standby attempt calls it off.
+  let idleCheck: {
+    readonly abandon: AbortController;
+    readonly minQuietMs: number;
+    readonly done: Promise<void>;
+  } | null = null;
   // While in standby: the correlations the stopped child was parked on, re-sent
   // on a hub re-establishment, and the timer for its earliest pending timer.
   let inStandby: {
@@ -5100,6 +5150,7 @@ export function createWorkflowSupervisor(
       }
       if (dispatched || unsettledMail.size > 0) continue;
       if (cohortAbort.signal.aborted) return;
+      bindings.onDispatchIdle?.();
       await raceAbort(cohortAbort.signal, wake);
     }
   }
@@ -5808,35 +5859,70 @@ export function createWorkflowSupervisor(
     }
   }
 
-  function enterStandby(): Promise<StandbyOutcome> {
+  // Why neither a standby attempt nor an idle check can start, if none can.
+  function standbyUnavailable(): StandbyRefusedError | null {
     if (
       state.phase === "idle" ||
       state.phase === "stopping" ||
       state.phase === "stopped" ||
       state.phase === "crash-looping"
     ) {
-      return Promise.reject(
-        new StandbyRefusedError(`the workflow child is ${state.phase}`),
-      );
+      return new StandbyRefusedError(`the workflow child is ${state.phase}`);
     }
     // A child being woken is past the standby attempt it had.
     if (waking !== null || respawnInProgress) {
-      return Promise.reject(
-        new StandbyDeferredError("the workflow child is restarting"),
-      );
+      return new StandbyDeferredError("the workflow child is restarting");
     }
+    return null;
+  }
+
+  function enterStandby(opts?: {
+    minQuietMs?: number;
+  }): Promise<StandbyOutcome> {
+    const minQuietMs = opts?.minQuietMs;
+    const unavailable = standbyUnavailable();
+    if (unavailable !== null) return Promise.reject(unavailable);
     // An attempt still settling answers for itself, even once the child it
     // stopped is recorded.
     if (standbyAttempt !== null) {
       // An abandoned attempt refuses with its own reason, which is not this
       // request's; asked again once it settles, a fresh attempt starts.
-      return standbyAttempt.abandon.signal.aborted
-        ? Promise.reject(
-            new StandbyDeferredError(
-              "an abandoned standby attempt is still settling",
-            ),
-          )
-        : standbyAttempt.outcome;
+      if (standbyAttempt.abandon.signal.aborted) {
+        return Promise.reject(
+          new StandbyDeferredError(
+            "an abandoned standby attempt is still settling",
+          ),
+        );
+      }
+      // Once the stop has begun, every caller shares the same standby.
+      if (state.phase === "standby") return standbyAttempt.outcome;
+      // An explicit standby calls off a conditional attempt before the stop
+      // begins and defers until it settles, so only one cancellable attempt
+      // runs at a time and the caller retries cleanly.
+      if (minQuietMs === undefined && standbyAttempt.minQuietMs !== undefined) {
+        abandonStandby(standbyAttempt, "superseded by a standby request");
+        return Promise.reject(
+          new StandbyDeferredError(
+            "a conditional standby attempt is still settling",
+          ),
+        );
+      }
+      // A conditional attempt shares only one with its own threshold: an
+      // explicit standby or a shorter threshold would stop the child too
+      // early, and a longer one could refuse it wrongly.
+      if (
+        minQuietMs !== undefined &&
+        minQuietMs !== standbyAttempt.minQuietMs
+      ) {
+        return Promise.reject(
+          new StandbyDeferredError(
+            standbyAttempt.minQuietMs === undefined
+              ? "a standby request is already in progress"
+              : "a conditional standby attempt with another threshold is already in progress",
+          ),
+        );
+      }
+      return standbyAttempt.outcome;
     }
     if (state.phase === "standby" && inStandby !== null) {
       return Promise.resolve(inStandby.outcome);
@@ -5862,8 +5948,12 @@ export function createWorkflowSupervisor(
       wakeIfStopped: false,
       childExited: false,
       correlations: null,
+      ...(minQuietMs !== undefined ? { minQuietMs } : {}),
     };
     standbyAttempt = attempt;
+    idleCheck?.abandon.abort(
+      new StandbyDeferredError("a standby attempt superseded the idle check"),
+    );
     void (async () => {
       let outcome: StandbyOutcome | undefined;
       let failure: unknown;
@@ -5880,6 +5970,49 @@ export function createWorkflowSupervisor(
       else done.reject(failure);
     })();
     return done.promise;
+  }
+
+  function checkIdle(minQuietMs: number): Promise<void> {
+    const unavailable = standbyUnavailable();
+    if (unavailable !== null) return Promise.reject(unavailable);
+    if (standbyAttempt !== null) {
+      return Promise.reject(
+        new StandbyDeferredError("a standby attempt is in progress"),
+      );
+    }
+    if (state.phase === "standby" && inStandby !== null) {
+      return Promise.resolve();
+    }
+    if (state.phase !== "running" || exitedGeneration === childGeneration) {
+      return Promise.reject(
+        new StandbyDeferredError("the workflow child is restarting"),
+      );
+    }
+    if (idleCheck !== null) {
+      return idleCheck.minQuietMs === minQuietMs
+        ? idleCheck.done
+        : Promise.reject(
+            new StandbyDeferredError("another idle check is in progress"),
+          );
+    }
+    const generation = childGeneration;
+    const abandon = new AbortController();
+    const done = refuseUnlessIdle(
+      {
+        generation,
+        abandon,
+        get childExited() {
+          return exitedGeneration === generation;
+        },
+        minQuietMs,
+      },
+      deriveWorkflowRunId(bindings.deploymentMailAddress),
+      minQuietMs,
+    ).finally(() => {
+      if (idleCheck?.abandon === abandon) idleCheck = null;
+    });
+    idleCheck = { abandon, minQuietMs, done };
+    return done;
   }
 
   function abandonCurrentStandby(reason: string): void {
@@ -5903,38 +6036,155 @@ export function createWorkflowSupervisor(
   ): Promise<StandbyOutcome> {
     const runId = deriveWorkflowRunId(bindings.deploymentMailAddress);
     try {
+      if (attempt.minQuietMs !== undefined) {
+        return await stopChildIfIdle(attempt, runId, attempt.minQuietMs);
+      }
       for (;;) {
         await untilStandbyQuiet(attempt);
         // Wait for the child to report it is quiet while it still takes input.
         const idle = await askChildQuiet(attempt, runId);
         if (!idle.quiet) continue;
-        freezeStandby(attempt);
-        const deadline = waitDeadline(readySetTimer, QUIET_CHECK_WATCHDOG_MS);
-        try {
-          if (!(await untilStandbyQuiet(attempt, deadline.promise))) continue;
-          const final = await askChildQuiet(attempt, runId, deadline.promise);
-          if (!final.quiet) continue;
-          attempt.fence = [];
-          if (
-            !(await untilDetachedWritesLand(deadline.promise)) ||
-            childWrites !== final.writes ||
-            !isStandbyQuiet()
-          ) {
-            releaseStandbyFence(attempt);
-            continue;
-          }
-          return await stopChildForStandby(
-            attempt,
-            final.wakeAt === undefined ? {} : { wakeAt: final.wakeAt },
-          );
-        } finally {
-          readyClearTimer(deadline.handle);
-          thawStandby(attempt);
-        }
+        const outcome = await stopChildIfQuiet(attempt, runId);
+        if (outcome !== null) return outcome;
       }
     } catch (cause) {
       releaseStandbyFence(attempt);
       throw cause;
+    }
+  }
+
+  // Conditional standby attempt: refuses unless idle, without waiting for work
+  // or freezing input, and only then freezes input for the bounded final quiet
+  // check and stop.
+  async function stopChildIfIdle(
+    attempt: StandbyAttempt,
+    runId: string,
+    minQuietMs: number,
+  ): Promise<StandbyOutcome> {
+    await refuseUnlessIdle(attempt, runId, minQuietMs);
+    const outcome = await stopChildIfQuiet(attempt, runId, minQuietMs);
+    if (outcome === null) {
+      throw new StandbyNotIdleError(
+        0,
+        "the deployment worked again before it could be stopped",
+      );
+    }
+    return outcome;
+  }
+
+  // The check before a conditional attempt, and all of an idle check. Stops
+  // and holds back nothing.
+  async function refuseUnlessIdle(
+    check: QuietCheck,
+    runId: string,
+    minQuietMs: number,
+  ): Promise<void> {
+    currentStandbyCohort(check);
+    if (!isStandbyQuiet()) {
+      throw new StandbyNotIdleError(0, "the deployment is busy");
+    }
+    refuseForHeldMail(check);
+    const deadline = waitDeadline(readySetTimer, QUIET_CHECK_WATCHDOG_MS);
+    try {
+      const first = await askChildQuiet(check, runId, {
+        deadline: deadline.promise,
+        probe: true,
+      });
+      if (!first.quiet) {
+        throw new StandbyNotIdleError(
+          0,
+          "the workflow child is working or did not answer in time",
+        );
+      }
+      if (first.quietForMs < minQuietMs) {
+        throw new StandbyNotIdleError(first.quietForMs);
+      }
+      refuseForNearTimer(first.wakeAt, minQuietMs);
+    } finally {
+      readyClearTimer(deadline.handle);
+    }
+    await refuseForInboxMail(check);
+    currentStandbyCohort(check);
+  }
+
+  // A child stopped for a timer due within `minQuietMs` would wake again
+  // before it stayed stopped as long as its runs had to wait, so the restart
+  // would cost more than the standby saves.
+  function refuseForNearTimer(
+    wakeAt: string | undefined,
+    minQuietMs: number,
+  ): void {
+    if (wakeAt !== undefined && Date.parse(wakeAt) - drainNow() < minQuietMs) {
+      throw new StandbyNotIdleError(
+        0,
+        "its next timer is due sooner than its runs have to wait",
+      );
+    }
+  }
+
+  // Mail the dispatch cannot hand over yet, such as mail behind a run that
+  // waits on an approval or a signal. Nothing would wake a stopped child for
+  // mail the dispatch took that the child has not committed.
+  function refuseForHeldMail(attempt: QuietCheck): void {
+    const fail = (message: string): never => {
+      throw attempt.minQuietMs !== undefined
+        ? new StandbyNotIdleError(0, message)
+        : new StandbyRefusedError(message);
+    };
+    if (untakenMail !== null) {
+      fail("mail the dispatch took is still waiting for the child");
+    }
+    if (unsettledMail.size > 0 || unansweredMail.size > 0) {
+      fail(
+        "mail a failed dispatch left in processing/ is not back in the inbox or with its run yet",
+      );
+    }
+    if (replayLeftMail) {
+      fail(
+        "mail a failed replay left waits in processing/ for the child to restart",
+      );
+    }
+  }
+
+  // The final check, with dispatch and signals held back: stop the child if it
+  // and the supervisor are still quiet, or return null when either works
+  // again. With `minQuietMs`, throws `StandbyNotIdleError` when the child has
+  // not been quiet that long or a timer is due within it.
+  async function stopChildIfQuiet(
+    attempt: StandbyAttempt,
+    runId: string,
+    minQuietMs?: number,
+  ): Promise<StandbyOutcome | null> {
+    freezeStandby(attempt);
+    const deadline = waitDeadline(readySetTimer, QUIET_CHECK_WATCHDOG_MS);
+    try {
+      if (!(await untilStandbyQuiet(attempt, deadline.promise))) return null;
+      const final = await askChildQuiet(attempt, runId, {
+        deadline: deadline.promise,
+      });
+      if (!final.quiet) return null;
+      if (minQuietMs !== undefined) {
+        if (final.quietForMs < minQuietMs) {
+          throw new StandbyNotIdleError(final.quietForMs);
+        }
+        refuseForNearTimer(final.wakeAt, minQuietMs);
+      }
+      attempt.fence = [];
+      if (
+        !(await untilDetachedWritesLand(deadline.promise)) ||
+        childWrites !== final.writes ||
+        !isStandbyQuiet()
+      ) {
+        releaseStandbyFence(attempt);
+        return null;
+      }
+      return await stopChildForStandby(
+        attempt,
+        final.wakeAt === undefined ? {} : { wakeAt: final.wakeAt },
+      );
+    } finally {
+      readyClearTimer(deadline.handle);
+      thawStandby(attempt);
     }
   }
 
@@ -5985,25 +6235,38 @@ export function createWorkflowSupervisor(
   }
 
   // Ask the child whether every run only waits on input from outside. Without
-  // a `deadline` the child answers once it is; with one, a child that does not
-  // answer in time counts as working. The child answers only the latest check,
-  // so this is the one sender and one standby attempt asks at a time.
+  // `now` the child answers once it is. With it, the child answers at once, a
+  // child that does not answer by `deadline` counts as working, and only such
+  // a check can be a probe. The child answers only the latest check, so this
+  // is the one sender and one standby attempt or idle check asks at a time.
   async function askChildQuiet(
-    attempt: StandbyAttempt,
+    attempt: QuietCheck,
     runId: string,
-    deadline?: Promise<void>,
-  ): Promise<{ quiet: boolean; wakeAt?: string; writes: number }> {
+    now?: { readonly deadline: Promise<void>; readonly probe?: true },
+  ): Promise<
+    | { quiet: true; quietForMs: number; wakeAt?: string; writes: number }
+    | { quiet: false; writes: number }
+  > {
     const cohort = currentStandbyCohort(attempt);
     const requestId = `quiet-${String((quietQuerySeq += 1))}`;
     const answered = new Promise<QuietAnswer | null>((resolve) => {
       pendingQuietQueries.set(requestId, resolve);
     });
-    const wait = deadline === undefined;
+    const deadline = now?.deadline;
+    const wait = now === undefined;
     try {
       // A send fails only once the child is going away. A wedged child can
       // block it instead, which the abandon and the deadline must still end.
       const sent = cohort.controlSender
-        .send({ type: "quiet.request", data: { requestId, runId, wait } })
+        .send({
+          type: "quiet.request",
+          data: {
+            requestId,
+            runId,
+            wait,
+            ...(now?.probe === true ? { probe: true as const } : {}),
+          },
+        })
         .catch((cause: unknown) => {
           throw new StandbyDeferredError(
             `the workflow child could not be asked whether it is quiet: ${cause instanceof Error ? cause.message : String(cause)}`,
@@ -6030,9 +6293,12 @@ export function createWorkflowSupervisor(
         );
       }
       if ("ended" in answer) {
+        if (attempt.minQuietMs !== undefined) {
+          throw new StandbyNotIdleError(0, "the workflow run has ended");
+        }
         throw new StandbyRefusedError("the workflow run has ended");
       }
-      if (answer.error !== undefined) {
+      if (!answer.quiet && answer.error !== undefined) {
         throw new StandbyRefusedError(
           `the workflow child could not check that it is quiet: ${answer.error}`,
         );
@@ -6043,10 +6309,10 @@ export function createWorkflowSupervisor(
     }
   }
 
-  // The cohort a standby attempt is for, or a refusal when it has been
-  // abandoned or the child it was for is gone.
+  // The cohort a standby attempt or idle check is for, or a refusal when it
+  // has been abandoned or the child it was for is gone.
   function currentStandbyCohort(
-    attempt: StandbyAttempt,
+    attempt: QuietCheck,
   ): Extract<SupervisorState, { phase: "running" }> {
     attempt.abandon.signal.throwIfAborted();
     if (
@@ -6108,6 +6374,24 @@ export function createWorkflowSupervisor(
     );
   }
 
+  // Mail still in the inbox would wake the child as soon as it stopped.
+  async function refuseForInboxMail(attempt: QuietCheck): Promise<void> {
+    const mailQueued = await inboxHoldsMail().catch((cause: unknown) => {
+      throw new StandbyRefusedError(
+        `the deployment's inbox could not be read: ${cause instanceof Error ? cause.message : String(cause)}`,
+        { cause },
+      );
+    });
+    if (mailQueued) {
+      throw attempt.minQuietMs !== undefined
+        ? new StandbyNotIdleError(
+            0,
+            "mail is waiting in the deployment's inbox",
+          )
+        : new StandbyRefusedError("mail is waiting in the deployment's inbox");
+    }
+  }
+
   async function stopChildForStandby(
     attempt: StandbyAttempt,
     outcome: StandbyOutcome,
@@ -6143,36 +6427,8 @@ export function createWorkflowSupervisor(
       );
     }
     attempt.correlations = correlations;
-    // Mail the dispatch cannot hand over yet, such as mail behind a run that
-    // waits on an approval or a signal. Mail still in the inbox would wake the
-    // child as soon as it stopped, and nothing would wake it for mail the
-    // dispatch took that the child has not committed.
-    if (untakenMail !== null) {
-      throw new StandbyRefusedError(
-        "mail the dispatch took is still waiting for the child",
-      );
-    }
-    if (unsettledMail.size > 0 || unansweredMail.size > 0) {
-      throw new StandbyRefusedError(
-        "mail a failed dispatch left in processing/ is not back in the inbox or with its run yet",
-      );
-    }
-    if (replayLeftMail) {
-      throw new StandbyRefusedError(
-        "mail a failed replay left waits in processing/ for the child to restart",
-      );
-    }
-    const mailQueued = await inboxHoldsMail().catch((cause: unknown) => {
-      throw new StandbyRefusedError(
-        `the deployment's inbox could not be read: ${cause instanceof Error ? cause.message : String(cause)}`,
-        { cause },
-      );
-    });
-    if (mailQueued) {
-      throw new StandbyRefusedError(
-        "mail is waiting in the deployment's inbox",
-      );
-    }
+    refuseForHeldMail(attempt);
+    await refuseForInboxMail(attempt);
     const live = currentStandbyCohort(attempt);
     // From here the child's exit is planned, not a crash.
     state = { ...live, phase: "standby", restored: false };
@@ -7124,6 +7380,7 @@ export function createWorkflowSupervisor(
     reEmitParkedCorrelations,
     credentialDelivery: () => currentCredentialDelivery,
     enterStandby,
+    checkIdle,
     wake,
     abandonStandby: abandonCurrentStandby,
   };

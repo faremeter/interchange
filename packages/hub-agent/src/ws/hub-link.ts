@@ -368,9 +368,9 @@ export interface DeployRouter {
    */
   undeploy?: (frame: AgentUndeployFrame) => Promise<void>;
   /**
-   * Cancel, stop, put in standby, or wake a workflow deployment, or request durable
-   * retention of its local inspection state. `signal` aborts once the
-   * connection that carried the frame closes.
+   * Cancel, stop, put in standby, or wake a workflow deployment, check whether
+   * it is idle, or request durable retention of its local inspection state.
+   * `signal` aborts once the connection that carried the frame closes.
    */
   control?: (
     frame: WorkflowControlFrame,
@@ -388,6 +388,12 @@ export type WorkflowControlOutcome = {
   refTips?: WorkflowRunRefTips;
   /** The earliest pending timer of the child in standby. */
   wakeAt?: string;
+  /**
+   * Set when `standby-if-idle` or `idle-check` was refused as not idle.
+   * `quietForMs` is 0 unless the child was quiet, but for less than
+   * `minQuietMs`. Sent on the ack as `error` plus `quietForMs`.
+   */
+  notIdle?: { reason: string; quietForMs: number };
 };
 
 /**
@@ -1974,12 +1980,17 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     let refTips: WorkflowRunRefTips | undefined;
     let retention: DeploymentRetention | undefined;
     let wakeAt: string | undefined;
+    let quietForMs: number | undefined;
     try {
       if (deployRouter.control === undefined)
         throw new Error("Workflow control is not supported by this sidecar");
-      ({ refTips, retention, wakeAt } = await deployRouter.control(frame, {
-        signal,
-      }));
+      const outcome = await deployRouter.control(frame, { signal });
+      if (outcome.notIdle !== undefined) {
+        error = fitDeploymentError(outcome.notIdle.reason);
+        quietForMs = Math.max(0, Math.floor(outcome.notIdle.quietForMs));
+      } else {
+        ({ refTips, retention, wakeAt } = outcome);
+      }
     } catch (cause) {
       error = fitDeploymentError(
         cause instanceof Error ? cause.message : String(cause),
@@ -1992,6 +2003,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       ...(refTips !== undefined ? { refTips } : {}),
       ...(retention !== undefined ? { retention } : {}),
       ...(wakeAt !== undefined ? { wakeAt } : {}),
+      ...(quietForMs !== undefined ? { quietForMs } : {}),
     });
   }
 
