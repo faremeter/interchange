@@ -705,7 +705,7 @@ export function createHubSessionLookups(
         // advanced before the failure, so only a Git read can prove nothing was
         // lost. One that failed earlier provably left Git unchanged, and so
         // did a commit that found its repository removed, or the ref moved
-        // off the commit it held: those checks run before the publish. A
+        // off the commit it held: those checks run before the ref moves. A
         // row kept for a removed repository would make recovery report lost
         // history on every pass.
         if (
@@ -722,9 +722,9 @@ export function createHubSessionLookups(
         };
       } finally {
         historyReceives.end(pendingId);
-        // A no-op after a publish. A failed removal leaves only a staging
-        // directory, which the next receive for this repository in a new
-        // Hub process removes, so it must not change the verdict.
+        // The prepare published the pack, so this only ends the receive,
+        // and does nothing once `commit()` ran; it must not change the
+        // verdict.
         await prepared.discard().catch((cause: unknown) => {
           logger.warn`Cannot discard the staged pack for ${workflowRunRepoId}: ${cause instanceof Error ? cause.message : String(cause)}`;
         });

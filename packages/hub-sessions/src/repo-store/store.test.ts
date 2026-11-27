@@ -4489,11 +4489,10 @@ describe("RepoStore", () => {
     test("a resend answered at prepare after a failed repair syncs the directory that repair left", async () => {
       const { firstSha, fanout, lostPath, resend } =
         await olderCommitMissingABlob();
-      const repair = await resend(firstSha);
-      if (repair.kind !== "prepared") throw new Error("expected prepared");
+      // The repair writes its objects when it is prepared.
       await syncedDuring(
         async () => {
-          await expect(repair.commit()).rejects.toThrow("sync failed");
+          await expect(resend(firstSha)).rejects.toThrow("sync failed");
         },
         { failing: fanout },
       );
@@ -6786,7 +6785,7 @@ describe("RepoStore prepared pack receive", () => {
     await expect(prepared.commit()).rejects.toThrow(/already committed/);
   });
 
-  test("a pack whose objects exist only in staging validates", async () => {
+  test("a pack validates from staging, and prepare writes its objects once it passes", async () => {
     const line = await sourceLine(["v1"]);
     const [tip] = line.commits;
     if (tip === undefined) throw new Error("line");
@@ -6815,11 +6814,80 @@ describe("RepoStore prepared pack receive", () => {
 
     expect(unpublishedRead).toBeInstanceOf(Error);
     expect(await receivedPacks(repoDir)).toEqual([]);
-    expect(await stagedPacks(repoDir)).toHaveLength(1);
+    expect(await stagedPacks(repoDir)).toEqual([]);
+    expect(await holdsLoose(repoDir, tip)).toBe(true);
+    expect(await target.store.resolveRef(principal, repoId, REF)).toBeNull();
     expect((await prepared.commit()).kind).toBe("applied");
     expect((await git.readCommit({ fs, dir: repoDir, oid: tip })).oid).toBe(
       tip,
     );
+  });
+
+  test("commit syncs the ref and no object, which prepare made durable", async () => {
+    const line = await sourceLine(["v1", "v2"]);
+    const [, tip] = line.commits;
+    if (tip === undefined) throw new Error("line");
+    const { store, repoDirOf } = await targetStore(runsHandler());
+    const repoDir = repoDirOf(repoId);
+    const pack = await line.packAt(tip);
+    const objects = path.join(".git", "objects");
+
+    const atPrepare = await syncedDuring(
+      () => prepare(store, repoId, pack, tip),
+      { base: repoDir },
+    );
+    expect(atPrepare.synced).toContain(path.join(objects, tip.slice(0, 2)));
+
+    const atCommit = await syncedDuring(() => atPrepare.result.commit(), {
+      base: repoDir,
+    });
+    expect(atCommit.result.kind).toBe("applied");
+    expect(atCommit.synced.filter((p) => p.startsWith(objects))).toEqual([]);
+    expect(atCommit.synced).toContain(path.join(".git", "refs", "heads"));
+  });
+
+  test("a pack that stays a pack is moved into place at prepare, so commit syncs only the ref", async () => {
+    const dataDir = await makeTempDir("repo-store-prepared-large-");
+    const source = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: {
+        "workflow-run": { ...createTestHandler(), kind: "workflow-run" },
+      },
+      authorize: allowAll,
+    });
+    // More than storage-isogit's UNPACK_LIMIT objects, so the pack is
+    // moved into place instead of unpacked.
+    const files = Object.fromEntries(
+      Array.from({ length: 120 }, (_, i) => [
+        `deploy/f${String(i)}.md`,
+        `file ${String(i)}`,
+      ]),
+    );
+    const { commitSha: tip } = await source.writeTree(principal, repoId, REF, {
+      files,
+      message: "large",
+    });
+    const pack = await historyPack(
+      path.join(dataDir, "repos-under-test", repoId.id),
+      tip,
+    );
+    const { store, repoDirOf } = await targetStore(runsHandler());
+    const repoDir = repoDirOf(repoId);
+
+    const prepared = await prepare(store, repoId, pack, tip);
+    expect(await receivedPacks(repoDir)).toHaveLength(1);
+    expect(await holdsLoose(repoDir, tip)).toBe(false);
+    expect(await store.resolveRef(principal, repoId, REF)).toBeNull();
+
+    const { result, synced } = await syncedDuring(() => prepared.commit(), {
+      base: repoDir,
+    });
+    expect(result.kind).toBe("applied");
+    const objects = path.join(".git", "objects");
+    expect(synced.filter((p) => p.startsWith(objects))).toEqual([]);
+    expect(synced).toContain(path.join(".git", "refs", "heads"));
+    expect(await store.resolveRef(principal, repoId, REF)).toBe(tip);
   });
 
   test("a prepare whose validation rejects the pack discards the staged pack", async () => {
@@ -6989,19 +7057,19 @@ describe("RepoStore prepared pack receive", () => {
     expect(await store.resolveRef(principal, repoId, REF)).toBe(tip);
   });
 
-  test("discard leaves no staged pack and nothing in objects/pack", async () => {
+  test("discard moves no ref, and leaves the objects prepare wrote with none naming them", async () => {
     const line = await sourceLine(["v1"]);
     const [tip] = line.commits;
     if (tip === undefined) throw new Error("line");
     const { store, repoDirOf } = await targetStore(runsHandler());
 
     const prepared = await prepare(store, repoId, await line.packAt(tip), tip);
-    expect(await stagedPacks(repoDirOf(repoId))).toHaveLength(1);
     await prepared.discard();
     await prepared.discard();
 
     expect(await stagedPacks(repoDirOf(repoId))).toEqual([]);
     expect(await receivedPacks(repoDirOf(repoId))).toEqual([]);
+    expect(await holdsLoose(repoDirOf(repoId), tip)).toBe(true);
     expect(await store.resolveRef(principal, repoId, REF)).toBeNull();
     await expect(prepared.commit()).rejects.toThrow(/already discarded/);
   });
@@ -7051,26 +7119,10 @@ describe("RepoStore prepared pack receive", () => {
       ".git",
       ...REF.split("/"),
     );
-    const synced: string[] = [];
-    const open = fs.promises.open;
-    const spy = spyOn(fs.promises, "open").mockImplementation(
-      async (target, flags, mode) => {
-        const handle = await open(target, flags, mode);
-        const sync = handle.sync.bind(handle);
-        spyOn(handle, "sync").mockImplementation(async () => {
-          synced.push(String(target));
-          await sync();
-        });
-        return handle;
-      },
+    const { result, synced } = await syncedDuring(() =>
+      copied.prepareReceivePack(principal, repoId, REF, pack, tip),
     );
-    try {
-      expect(
-        await copied.prepareReceivePack(principal, repoId, REF, pack, tip),
-      ).toEqual({ kind: "already_applied" });
-    } finally {
-      spy.mockRestore();
-    }
+    expect(result).toEqual({ kind: "already_applied" });
     expect(synced).toEqual(
       expect.arrayContaining([refFile, path.dirname(refFile)]),
     );

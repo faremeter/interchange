@@ -65,7 +65,9 @@ async function looseObjectBytes(
  *
  * `discard` is safe at any time. Once `publish` has started, `discard`
  * does nothing, so a caller can discard on every path without a check.
- * `publish` runs once, and only on a pack that is not discarded.
+ * `publish` runs only on a pack that is not discarded, and a `publish`
+ * after one that finished does nothing, so a caller can publish ahead of
+ * a later step that publishes too.
  */
 export type StagedPack = {
   readonly oids: readonly string[];
@@ -334,6 +336,7 @@ export async function stagePack(
     oids,
     fs: viewFs,
     async publish(cache = {}) {
+      if (state === "published") return;
       if (state !== "staged") {
         throw new Error(
           `staged pack "${transferId}" in ${dir} cannot be published: it is ${state}`,

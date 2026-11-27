@@ -834,3 +834,33 @@ test("a publish lists the pack directory once, however many objects it writes", 
 
   expect(listings).toBe(1);
 });
+
+test("a publish after one that finished does nothing, for loose objects and for a pack", async () => {
+  const small = await makeSourceRepo();
+  const large = await makeLargeSourceRepo(UNPACK_LIMIT - 2);
+  const targetDir = await tempDir();
+  await initAgentRepo(targetDir);
+  const { runtime, steps } = recordingRuntime(targetDir);
+  for (const [source, id] of [
+    [small, "loose"],
+    [large, "packed"],
+  ] as const) {
+    const staged = await stagePackOn(
+      runtime,
+      targetDir,
+      await createPackFromRepo(source.dir, source.oids),
+      id,
+    );
+    await staged.publish();
+    steps.length = 0;
+    await staged.publish();
+    await staged.discard();
+    expect(steps).toEqual([]);
+    for (const oid of source.oids) {
+      expect((await git.readObject({ fs, dir: targetDir, oid })).oid).toBe(oid);
+    }
+  }
+  expect(
+    (await packDirEntries(targetDir)).filter((n) => n.endsWith(".idx")),
+  ).toEqual(["pack-recv-packed.idx"]);
+});

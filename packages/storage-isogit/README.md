@@ -101,7 +101,8 @@ one, every commit is signed. Nothing verifies those signatures at runtime.
 
 `stagePack` writes and indexes a received pack outside `objects/pack/` and
 returns a handle. The handle's `fs` reads the staged objects, so a receiver
-validates the pack before it publishes it; a rejected pack is discarded.
+validates the pack before it publishes it and discards one that fails. A pack
+that a later check of the caller's rejects after the publish keeps its objects.
 Publishing writes each object as a loose object rather than adding a pack,
 so a read does not slow down as a repository takes more pushes. A pack of
 100 objects or more is moved into `objects/pack/` instead while the

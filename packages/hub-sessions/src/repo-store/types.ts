@@ -716,10 +716,9 @@ export type RepoStoreSubscribeEvent = {
 
 /**
  * The outcome of a prepared receive's `commit()`. `already_applied`
- * means the ref already held the pack's tip, so the ref did not move. Its
- * pack is published only when the tip's tree was walked whole, on a ref
- * not checked whole or for a commit older than the ref's tip that the
- * store does not hold whole, to restore an object the store lost.
+ * means the ref already held the pack's tip, so the ref did not move. The
+ * objects the prepare wrote stay, which restores an object the store lost
+ * when the tip's tree was walked whole.
  */
 export type PackCommitResult =
   | { readonly kind: "already_applied" }
@@ -736,8 +735,9 @@ export type PackCommitResult =
     } & Readonly<Omit<PushFindings, "dispatchEvidence">>);
 
 /**
- * A pack that `prepareReceivePack` staged and validated. `commit()`
- * publishes it and moves the ref; `discard()` removes it.
+ * A pack that `prepareReceivePack` staged, validated and wrote into the
+ * repo, where no ref names its objects yet. `commit()` moves the ref;
+ * `discard()` leaves the ref and the objects as they are.
  * `already_applied` means the ref already held the pack's tip when the
  * receive began, and needed nothing of the pack, so nothing stays staged.
  */

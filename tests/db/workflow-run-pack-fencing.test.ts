@@ -603,7 +603,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(await pendingRows()).toEqual([]);
     });
 
-    test("a release while a pack validates rejects the pack and leaves nothing staged or published", async () => {
+    test("a release while a pack validates rejects the pack, moves no ref and leaves nothing staged", async () => {
       const line = await runLine([[{ runId: "run-a" }], [{ runId: "run-b" }]]);
       const seeded = commitAt(line, 0);
       const tip = commitAt(line, 1);
@@ -625,7 +625,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         RUN_EVENTS_REF,
         seeded,
       );
-      const packsBefore = await publishedPacks(agentRepoStore);
       // The seed went through the same wrapper; only the receive's own
       // commit counts below.
       commits.splice(0);
@@ -647,7 +646,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
       expect(commits).toEqual([]);
       expect(await refTip(agentRepoStore)).toBe(seeded);
-      expect(await publishedPacks(agentRepoStore)).toEqual(packsBefore);
       expect(await stagedEntries(agentRepoStore)).toEqual([]);
       expect(await pendingRows()).toEqual([]);
     });

@@ -216,22 +216,27 @@ export type LocalRepoStore = RepoStore & {
    * holds whole is answered `already_applied` by prepare, which removes
    * the staged pack without writing it.
    *
-   * The returned `commit()` takes the repo lock, publishes the pack,
-   * mostly as loose objects, and moves `ref` to `commitSha`, with the
-   * live tip as the old value. Both are durable before `commit()`
-   * returns. The ref can move while the pack validates, so there is no
-   * `expectedOldSha`: when the live tip already holds `commitSha`,
-   * `commit()` answers `already_applied`, after it publishes the pack on a
-   * ref not checked whole; when the live tip is a commit
+   * A pack that passes is published before prepare returns, under the
+   * repo lock: mostly as loose objects, synced, which no ref names yet. A
+   * caller can then run `commit()` under a lock of its own that others
+   * wait on, since `commit()` is left with the ref.
+   *
+   * The returned `commit()` takes the repo lock and moves `ref` to
+   * `commitSha`, with the live tip as the old value. The objects and the
+   * ref are durable before `commit()` returns. The ref can move while the
+   * pack validates, so there is no `expectedOldSha`: when the live tip
+   * already holds `commitSha`, `commit()` answers `already_applied`, and
+   * the objects prepare wrote stay; when the live tip is a commit
    * of this pack, it returns only the findings of the later commits. Any
    * other live tip gets the pack tip, because the sender is authoritative
    * for the shape of its history, except under a pack staged only to
    * restore a commit the ref held at prepare: that `commit()` fails, so a
    * retry validates against the new tip.
    *
-   * `discard()` takes the repo lock and removes the staged pack. It does
-   * nothing when called again or once `commit()` is called. `commit()`
-   * leaves nothing staged, and fails when called again or after
+   * `discard()` takes the repo lock and ends the receive without moving
+   * the ref; the objects prepare published stay, with no ref naming them.
+   * It does nothing when called again or once `commit()` is called.
+   * `commit()` leaves nothing staged, and fails when called again or after
    * `discard()`. A failed validation removes the staged pack under the
    * repo lock before it throws. Throws
    * `RepoRemovedDuringReceiveError`, from the validation or from
@@ -2709,8 +2714,9 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
   }
 
   // The locked last step of every receive: write the staged pack's
-  // objects into the repo and move the ref. The caller holds the repo
-  // lock. `findings` is the result of `validateStaged`.
+  // objects into the repo and move the ref. A prepared receive published
+  // its pack ahead, so its publish here does nothing. The caller holds the
+  // repo lock. `findings` is the result of `validateStaged`.
   async function commitStaged(
     s: StagedReceive,
     findings: readonly PushFindings[],
@@ -2882,6 +2888,17 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
       dispatchEvidence = dispatchEvidenceOfPack(
         findings.map((found) => found.dispatchEvidence),
       );
+      // The caller runs `commit()` under a database lock, so the pack is
+      // published here and `commit()` only moves the ref. When it moves
+      // none, or never runs, the objects stay with no ref naming them.
+      if (!heldWhole) {
+        await withRepoLock(repoId, async () => {
+          if (!repoStillHolds(s)) {
+            throw new RepoRemovedDuringReceiveError(repoId);
+          }
+          await withReceiveCache(s.dir, (cache) => s.staged.publish(cache()));
+        });
+      }
     } catch (err) {
       // A repo removed during validation can fail its reads. That is not
       // a fault of the pack, so it gets its own error. `removeRepo`
@@ -2893,7 +2910,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
         await discardStaged(s);
         return !repoStillHolds(s);
       });
-      if (removed) {
+      if (removed && !(err instanceof RepoRemovedDuringReceiveError)) {
         throw new RepoRemovedDuringReceiveError(repoId, { cause: err });
       }
       throw err;
