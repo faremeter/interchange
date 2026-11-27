@@ -188,6 +188,7 @@
 import fs from "node:fs";
 import { type } from "arktype";
 import { getLogger } from "@intx/log";
+import { RefNotDurableError } from "@intx/storage-isogit";
 import { deriveDeliveryKey } from "@intx/types/message-id";
 import { ControlParkKind } from "@intx/types/runtime-core";
 import { correlationIdFromSignalName } from "@intx/types/signals";
@@ -195,6 +196,13 @@ import { StepStateSnapshot } from "@intx/types/step-state-snapshot";
 import { controlParkKindOf } from "@intx/workflow/state-machine";
 import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy/addresses";
 import { parseMailboxIndex, type MailboxIndex } from "./mailbox-index";
+import {
+  acceptedDispatchOf,
+  type AcceptedWorkflowDispatch,
+  type CommitDispatchEvidence,
+  type ConsumedWorkflowDispatch,
+  type PrunedWorkflowDispatch,
+} from "./workflow-dispatch-evidence";
 import {
   authorizeUserPrincipal,
   NoBlobAtPathError,
@@ -209,6 +217,7 @@ import {
   type RepoId,
   type RepoStore,
   type ValidatePushResult,
+  type WriteTreeDeltaArgs,
 } from "./repo-store";
 import {
   WORKFLOW_RUN_EVENTS_FILE,
@@ -230,6 +239,10 @@ const logger = getLogger(["hub-sessions", "workflow-run-kind"]);
 // Workflow-run events commit on the substrate's default branch; the
 // supervisor wires the workflow-process child against this ref.
 export const WORKFLOW_RUN_REF = "refs/heads/main";
+
+// The claim-check subtree commits on its own ref, so subscribers see one
+// coherent claim-check commit stream apart from the run event log.
+export const WORKFLOW_RUN_CLAIM_CHECK_REF = "refs/heads/events";
 
 export function workflowRunRepoIdForAddress(agentAddress: string) {
   return {
@@ -681,7 +694,7 @@ function sameMessage(
  * Parse an inbox or processing filename into its receivedAt and identity,
  * or `null` when the name does not have the queue shape.
  */
-function parseQueueFilename(
+export function parseQueueFilename(
   name: string,
 ): { receivedAt: number; identity: string } | null {
   const match = QUEUE_FILENAME_RE.exec(name);
@@ -1072,9 +1085,17 @@ async function validateCombinedEventRuns(
   priorListing: TreeListing,
   scopeRunIds: ReadonlySet<string> | undefined,
 ): Promise<
-  { ok: true; combinedRunIds: Set<string> } | { ok: false; reason: string }
+  | {
+      ok: true;
+      combinedRunIds: Set<string>;
+      accepted: AcceptedWorkflowDispatch[];
+    }
+  | { ok: false; reason: string }
 > {
   const combinedRunIds = new Set<string>();
+  // A run that arrives sealed had no event checked one by one, so its
+  // dispatches come from its combined log.
+  const accepted: AcceptedWorkflowDispatch[] = [];
   const runIds =
     scopeRunIds === undefined
       ? await listDir(WORKFLOW_RUN_RUNS_PREFIX)
@@ -1128,10 +1149,23 @@ async function validateCombinedEventRuns(
       const content = new TextDecoder().decode(await readBlob(combinedPath));
       const structure = checkCombinedStructure(runId, combinedPath, content);
       if (!structure.ok) return structure;
+      for (const [index, line] of splitCombinedEventLog(content).entries()) {
+        const linePath = `${combinedPath}:${String(index + 1)}`;
+        let dispatch: Omit<AcceptedWorkflowDispatch, "runId"> | null;
+        try {
+          dispatch = acceptedDispatchOf(JSON.parse(line), linePath);
+        } catch (cause) {
+          return {
+            ok: false,
+            reason: cause instanceof Error ? cause.message : String(cause),
+          };
+        }
+        if (dispatch !== null) accepted.push({ runId, ...dispatch });
+      }
     }
     combinedRunIds.add(runId);
   }
-  return { ok: true, combinedRunIds };
+  return { ok: true, combinedRunIds, accepted };
 }
 
 /**
@@ -1886,6 +1920,13 @@ type EventSummary = {
   type: string;
   origin: string | undefined;
   approvalWait: ApprovalWait | undefined;
+  /**
+   * The dispatch the event accepts, if any. A malformed one rejects only
+   * the push that adds the event, since accepted history can hold one.
+   */
+  dispatch:
+    | { ok: true; accepted: Omit<AcceptedWorkflowDispatch, "runId"> | null }
+    | { ok: false; reason: string };
 };
 
 /**
@@ -1977,7 +2018,29 @@ async function parseEventBlob(
       reason: `event ${entry.blobPath} body.seq ${String(validated.seq)} does not match filename seq ${String(entry.filenameSeq)}`,
     };
   }
-  if (validated.type === "CancelRequested") {
+  let dispatch: EventSummary["dispatch"];
+  try {
+    dispatch = { ok: true, accepted: acceptedDispatchOf(body, entry.blobPath) };
+  } catch (cause) {
+    dispatch = {
+      ok: false,
+      reason: cause instanceof Error ? cause.message : String(cause),
+    };
+  }
+  const summary = summarizeEvent(entry, body, validated.type);
+  return summary.ok
+    ? { ok: true, event: { ...summary.event, dispatch } }
+    : summary;
+}
+
+function summarizeEvent(
+  entry: RunEventBlob,
+  body: unknown,
+  eventType: string,
+):
+  | { ok: true; event: Omit<EventSummary, "dispatch"> }
+  | { ok: false; reason: string } {
+  if (eventType === "CancelRequested") {
     const cancelFields = CancelRequestedFields(body);
     if (cancelFields instanceof type.errors) {
       return {
@@ -1994,36 +2057,33 @@ async function parseEventBlob(
     return {
       ok: true,
       event: {
-        type: validated.type,
+        type: eventType,
         origin: cancelFields.origin,
         approvalWait: undefined,
       },
     };
   }
-  if (
-    validated.type === "SignalAwaited" ||
-    validated.type === "SignalAwaitAbandoned"
-  ) {
+  if (eventType === "SignalAwaited" || eventType === "SignalAwaitAbandoned") {
     const waitFields = SignalWaitFields(body);
     if (waitFields instanceof type.errors) {
       return {
         ok: false,
-        reason: `event ${entry.blobPath} ${validated.type} payload invalid: ${waitFields.summary}`,
+        reason: `event ${entry.blobPath} ${eventType} payload invalid: ${waitFields.summary}`,
       };
     }
     return {
       ok: true,
       event: {
-        type: validated.type,
+        type: eventType,
         origin: undefined,
-        approvalWait: approvalWaitOf(validated.type, waitFields),
+        approvalWait: approvalWaitOf(eventType, waitFields),
       },
     };
   }
   return {
     ok: true,
     event: {
-      type: validated.type,
+      type: eventType,
       origin: undefined,
       approvalWait: undefined,
     },
@@ -2607,12 +2667,21 @@ async function validateClaimCheckSubtree(
   prospectiveListing: TreeListing,
   priorListing: TreeListing,
   cache: ParseCache,
-): Promise<ValidatePushResult> {
+): Promise<
+  | {
+      ok: true;
+      consumed: readonly ConsumedWorkflowDispatch[];
+      pruned: CommitDispatchEvidence["pruned"];
+    }
+  | { ok: false; reason: string }
+> {
   const prospectiveConsumedOid = makeListingOidResolver(
     "prospective",
     prospectiveListing,
   );
   const priorConsumedOid = makeListingOidResolver("prior", priorListing);
+  const consumedAdded: ConsumedWorkflowDispatch[] = [];
+  const consumedPruned: PrunedWorkflowDispatch[] = [];
 
   const enumerated = await enumerateClaimCheckBlobs(
     listDir,
@@ -2844,6 +2913,10 @@ async function validateClaimCheckSubtree(
             reason: `consumed ${e.blobPath} present in the prior tree is missing from the prospective tree but its receivedAt ${String(receivedAt)} is not below the retention watermark ${String(prospectiveWatermark)}; consumed entries may be pruned only once the watermark has passed them`,
           };
         }
+        consumedPruned.push({
+          address: decodedAddress,
+          identity: e.identityFromFilename,
+        });
       }
       for (const e of priorBucket.processing) {
         if (prospectiveProcessingPaths.has(e.blobPath)) continue;
@@ -2962,10 +3035,20 @@ async function validateClaimCheckSubtree(
           reason: `consumed ${entry.blobPath} does not name the same message as the prior processing entry it consumes; messageId, authenticatedSender and deliveryKey must all carry over`,
         };
       }
+      consumedAdded.push({
+        messageId: consumedBody.messageId,
+        ...(consumedBody.deliveryKey === undefined
+          ? {}
+          : { deliveryKey: consumedBody.deliveryKey }),
+        address: consumedBody.address,
+        ...(consumedBody.rejection === undefined
+          ? {}
+          : { rejection: consumedBody.rejection }),
+      });
     }
   }
 
-  return { ok: true };
+  return { ok: true, consumed: consumedAdded, pruned: consumedPruned };
 }
 
 /**
@@ -3374,6 +3457,8 @@ export const workflowRunKindHandler: KindHandler = {
       );
     };
 
+    let consumedEvidence: readonly ConsumedWorkflowDispatch[] = [];
+    let prunedEvidence: CommitDispatchEvidence["pruned"] = [];
     if (subtreeChanged(WORKFLOW_RUN_ADDRESSES_PREFIX)) {
       const claimCheck = await validateClaimCheckSubtree(
         listDir,
@@ -3388,6 +3473,8 @@ export const workflowRunKindHandler: KindHandler = {
         logger.debug`workflow-run validatePush rejected ${repoId.kind}/${repoId.id} on ${ref}: ${claimCheck.reason}`;
         return claimCheck;
       }
+      consumedEvidence = claimCheck.consumed;
+      prunedEvidence = claimCheck.pruned;
     }
 
     if (subtreeChanged(WORKFLOW_RUN_MAILBOX_PREFIX)) {
@@ -3417,7 +3504,14 @@ export const workflowRunKindHandler: KindHandler = {
       // events subtree — `.gitignore`-only or claim-check-only trees
       // are accepted so the asset routes' init can land before any
       // run has produced an event.
-      return { ok: true };
+      return {
+        ok: true,
+        dispatchEvidence: {
+          consumed: consumedEvidence,
+          accepted: [],
+          pruned: prunedEvidence,
+        },
+      };
     }
 
     const enumerated = await enumerateEventBlobs(listDir, scopeRunIds);
@@ -3428,6 +3522,7 @@ export const workflowRunKindHandler: KindHandler = {
 
     const newlyTerminalRuns: NewlyTerminalRun[] = [];
     const approvalWaitChanges: ApprovalWaitChange[] = [];
+    const acceptedEvidence: AcceptedWorkflowDispatch[] = [];
     for (const [runId, entries] of enumerated.runs) {
       if (entries.length === 0) {
         return {
@@ -3533,6 +3628,16 @@ export const workflowRunKindHandler: KindHandler = {
           }
         }
         if (terminalSeq !== null) return afterTerminal(entry);
+        if (newlyAdded) {
+          const { dispatch } = parsed.event;
+          if (!dispatch.ok) {
+            logger.debug`workflow-run validatePush rejected ${repoId.kind}/${repoId.id} on ${ref}: ${dispatch.reason}`;
+            return dispatch;
+          }
+          if (dispatch.accepted !== null) {
+            acceptedEvidence.push({ runId, ...dispatch.accepted });
+          }
+        }
         if (newlyAdded && parsed.event.approvalWait !== undefined) {
           approvalWaits.set(
             parsed.event.approvalWait.correlationId,
@@ -3681,7 +3786,16 @@ export const workflowRunKindHandler: KindHandler = {
       return stepsCheck;
     }
 
-    return { ok: true, newlyTerminalRuns, approvalWaitChanges };
+    return {
+      ok: true,
+      newlyTerminalRuns,
+      approvalWaitChanges,
+      dispatchEvidence: {
+        consumed: consumedEvidence,
+        accepted: [...acceptedEvidence, ...combinedRuns.accepted],
+        pruned: prunedEvidence,
+      },
+    };
   },
   onRefUpdated() {
     // No cached index today. Consumers read events through the
@@ -3851,14 +3965,7 @@ export const workflowRunAuthorize: AuthorizeFn = (
 // landing the whole delta in a single commit, which is the atomic-commit
 // guarantee these operations require.
 
-function claimCheckCommitRef(): string {
-  // Every claim-check operation targets this one ref so subscribers see
-  // a single coherent claim-check commit stream. The run event log lives
-  // on `WORKFLOW_RUN_REF`, a different ref.
-  return "refs/heads/events";
-}
-
-function addressSegmentFor(address: string): string {
+export function addressSegmentFor(address: string): string {
   // The substrate boundary is the only place URL-encoding happens.
   // `validatePush` rejects non-round-trip segments; mirroring the same
   // encoder here is the only legitimate way to produce one.
@@ -4052,8 +4159,10 @@ export type EnqueueAlreadyPresentReason =
  * for a caller gating a durable-receipt ack: a returned outcome is safe to
  * acknowledge (the bytes are on disk -- freshly written or already present),
  * a throw is not (the write could not complete or its disposition cannot be
- * decided). `enqueued` is the only outcome that added a new inbox entry, so
- * it is the only one a dispatch-driving caller wakes its loop on.
+ * decided). `enqueued` is the only outcome that added a new inbox entry. A
+ * dispatch-driving caller wakes its loop on it, and on `duplicate` or
+ * `already_inbox`: an earlier call can have landed that entry and failed
+ * before its caller woke the loop.
  */
 export type EnqueueInboxOutcome =
   | ({ outcome: "enqueued" } & EnqueueInboxResult)
@@ -4137,7 +4246,7 @@ export async function enqueueInbox(
   args: EnqueueInboxArgs,
 ): Promise<EnqueueInboxOutcome> {
   const addressSegment = addressSegmentFor(args.address);
-  const ref = claimCheckCommitRef();
+  const ref = WORKFLOW_RUN_CLAIM_CHECK_REF;
   const deliveryKey = await deriveDeliveryKey(
     args.authenticatedSender,
     args.messageId,
@@ -4312,9 +4421,9 @@ export async function dequeueToProcessing(
   address: string,
 ): Promise<DequeueToProcessingResult> {
   const addressSegment = addressSegmentFor(address);
-  const ref = claimCheckCommitRef();
+  const ref = WORKFLOW_RUN_CLAIM_CHECK_REF;
   let dequeued: { key: string; envelope: ClaimCheckEnvelope } | null = null;
-  const { commitSha } = await store.writeTreeDelta(principal, repoId, ref, {
+  const delta: WriteTreeDeltaArgs = {
     changedPathPrefixes: new Set([addressPrefix(addressSegment)]),
     message: `dequeue ${address}`,
     computeDelta: async (_parentCommitSha, prior) => {
@@ -4361,7 +4470,20 @@ export async function dequeueToProcessing(
         deletes: [firstPath],
       };
     },
-  });
+  };
+  const commitSha = await store
+    .writeTreeDelta(principal, repoId, ref, delta)
+    .then(
+      (written) => written.commitSha,
+      (cause: unknown) => {
+        // The move landed and only its sync failed, so the entry is in
+        // processing/ and no later dequeue takes it. A crash that rolls the
+        // ref back leaves it in the inbox for the next dispatch instead.
+        if (!(cause instanceof RefNotDurableError)) throw cause;
+        logger.warn`Dequeued mail for ${address}, but its ref is not durable: ${cause.message}`;
+        return cause.oid;
+      },
+    );
   if (dequeued === null) return null;
   const captured: { key: string; envelope: ClaimCheckEnvelope } = dequeued;
   return { commitSha, key: captured.key, envelope: captured.envelope };
@@ -4447,7 +4569,7 @@ export async function hasInboxEntries(
   const reads = await store.openCommittedReads(
     principal,
     repoId,
-    claimCheckCommitRef(),
+    WORKFLOW_RUN_CLAIM_CHECK_REF,
   );
   if (reads === null) return false;
   const inbox = await reads.listDir(
@@ -4533,7 +4655,7 @@ export async function markConsumed(
   args: MarkConsumedArgs,
 ): Promise<MarkConsumedResult> {
   const addressSegment = addressSegmentFor(args.address);
-  const ref = claimCheckCommitRef();
+  const ref = WORKFLOW_RUN_CLAIM_CHECK_REF;
   const retentionHorizonMs =
     args.retentionHorizonMs ?? DEFAULT_CONSUMED_RETENTION_MS;
   let consumedEnvelope: ConsumedEnvelope | null = null;
@@ -4936,7 +5058,7 @@ export async function replayProcessingToInbox(
   opts: ReplayProcessingToInboxOpts = {},
 ): Promise<ReplayProcessingToInboxResult> {
   const addressSegment = addressSegmentFor(address);
-  const ref = claimCheckCommitRef();
+  const ref = WORKFLOW_RUN_CLAIM_CHECK_REF;
   const ownedIdentities = opts.ownedIdentities ?? new Set<string>();
   const replayedKeys: string[] = [];
   const retainedIdentities: string[] = [];

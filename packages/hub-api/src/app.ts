@@ -37,9 +37,9 @@ import type {
   SessionService,
   SidecarRouter,
   WorkflowAllocationService,
-  WorkflowDispatchService,
   WorkflowLifecycleService,
 } from "@intx/hub-sessions";
+import type { WorkflowDispatch } from "./workflow-run-trigger";
 
 import { createMeRoutes } from "./routes/me";
 import { createTenantRoutes } from "./routes/tenants";
@@ -140,7 +140,7 @@ export type MountHubRoutesDeps = {
   sidecarRouter: SidecarRouter;
   sessionService: SessionService;
   workflowAllocationService?: WorkflowAllocationService;
-  workflowDispatchService?: WorkflowDispatchService;
+  workflowDispatch?: WorkflowDispatch;
   workflowLifecycleService?: WorkflowLifecycleService;
   eventCollectors: EventCollectorRegistry;
   /**
@@ -222,7 +222,7 @@ export function mountHubRoutes(
     sidecarRouter,
     sessionService,
     workflowAllocationService,
-    workflowDispatchService,
+    workflowDispatch,
     workflowLifecycleService,
     eventCollectors,
     sidecarWsHandler,
@@ -373,9 +373,7 @@ export function mountHubRoutes(
       sidecarRouter,
       eventCollectors,
       repoStore,
-      ...(workflowDispatchService !== undefined
-        ? { workflowDispatchService }
-        : {}),
+      ...(workflowDispatch !== undefined ? { workflowDispatch } : {}),
       ...(workflowLifecycleService !== undefined
         ? { workflowLifecycleService }
         : {}),
@@ -417,9 +415,7 @@ export function mountHubRoutes(
         ...(workflowAllocationService !== undefined
           ? { workflowAllocationService }
           : {}),
-        ...(workflowDispatchService !== undefined
-          ? { workflowDispatchService }
-          : {}),
+        ...(workflowDispatch !== undefined ? { workflowDispatch } : {}),
         sidecarRouter,
         repoStore,
         grantStoreFor,
@@ -435,8 +431,8 @@ export function mountHubRoutes(
     createApprovalRoutes({
       db,
       sidecarRouter,
-      ...(workflowDispatchService !== undefined
-        ? { workflowDispatchService }
+      ...(workflowDispatch !== undefined
+        ? { workflowDispatchService: workflowDispatch.service }
         : {}),
       ...(readRunLifecycles !== undefined
         ? { readRunLifecycles }
@@ -566,7 +562,7 @@ export type CreateAppOpts = {
   sidecarRouter: SidecarRouter;
   sessionService: SessionService;
   workflowAllocationService?: WorkflowAllocationService;
-  workflowDispatchService?: WorkflowDispatchService;
+  workflowDispatch?: WorkflowDispatch;
   workflowLifecycleService?: WorkflowLifecycleService;
   eventCollectors: EventCollectorRegistry;
   /**
@@ -608,7 +604,7 @@ export function createApp({
   sidecarRouter,
   sessionService,
   workflowAllocationService,
-  workflowDispatchService,
+  workflowDispatch,
   workflowLifecycleService,
   eventCollectors,
   credentialCipher,
@@ -644,9 +640,7 @@ export function createApp({
     ...(workflowAllocationService !== undefined
       ? { workflowAllocationService }
       : {}),
-    ...(workflowDispatchService !== undefined
-      ? { workflowDispatchService }
-      : {}),
+    ...(workflowDispatch !== undefined ? { workflowDispatch } : {}),
     ...(workflowLifecycleService !== undefined
       ? { workflowLifecycleService }
       : {}),

@@ -60,7 +60,10 @@ import {
 } from "@intx/workflow-deploy";
 
 import { createApp } from "../app";
-import { MAX_MAIL_BODY_BYTES } from "../workflow-run-trigger";
+import {
+  MAX_MAIL_BODY_BYTES,
+  type WorkflowDispatch,
+} from "../workflow-run-trigger";
 import { deriveRunRuntimeGrantRows } from "../run-grant-materialization";
 import {
   createSidecarEmitter,
@@ -73,6 +76,7 @@ import {
   type WorkflowDispatchService,
   type WorkflowRunLifecycle,
   WorkflowProvisioningError,
+  WORKFLOW_RUN_CLAIM_CHECK_REF,
 } from "@intx/hub-sessions";
 import type { GetSession } from "../session";
 
@@ -703,6 +707,16 @@ type WorkflowSignalDispatchEnqueue = Parameters<
   WorkflowDispatchService["enqueueSignal"]
 >[0];
 
+// The stub repo holds no consumed or processing mail, so no revisit is due.
+function mockWorkflowDispatch(
+  ...args: Parameters<typeof createMockWorkflowDispatchService>
+): WorkflowDispatch {
+  return {
+    service: createMockWorkflowDispatchService(...args),
+    projection: { revisit: () => undefined },
+  };
+}
+
 function createMockWorkflowDispatchService(
   enqueues: WorkflowDispatchEnqueue[],
   signalEnqueues: WorkflowSignalDispatchEnqueue[],
@@ -798,6 +812,7 @@ function createMockAssetService(workflowJson: string | null): AssetService {
 function createStubRepoStore(
   repoDirById?: Map<string, string>,
   runLifecycle: WorkflowRunLifecycle | (() => WorkflowRunLifecycle) = "live",
+  readRefs: string[] = [],
 ): RepoStore {
   const unused = () =>
     Promise.reject(new Error("stub repoStore is not wired in workflow tests"));
@@ -826,7 +841,8 @@ function createStubRepoStore(
       }
       return dir;
     },
-    openCommittedReads: async () => {
+    openCommittedReads: async (_principal, _repoId, ref) => {
+      readRefs.push(ref);
       const lifecycle =
         typeof runLifecycle === "function" ? runLifecycle() : runLifecycle;
       return {
@@ -902,6 +918,8 @@ type TestAppOpts = {
   tenantConfig?: unknown;
   repoDirById?: Map<string, string>;
   runLifecycle?: WorkflowRunLifecycle | (() => WorkflowRunLifecycle);
+  // Each ref the trigger opens committed reads at.
+  readRefs?: string[];
   // The trigger's send check. Unset, it allows every recipient; the
   // database-backed authorizer is tested against a real database.
   authorizeMailSend?: MailSendAuthorizer;
@@ -968,7 +986,7 @@ function createTestApp(opts: TestAppOpts = {}) {
       : {}),
     ...(opts.workflowDispatchEnqueues !== undefined
       ? {
-          workflowDispatchService: createMockWorkflowDispatchService(
+          workflowDispatch: mockWorkflowDispatch(
             opts.workflowDispatchEnqueues,
             opts.workflowSignalDispatchEnqueues ?? [],
             opts.workflowSignalDispatchError,
@@ -976,7 +994,7 @@ function createTestApp(opts: TestAppOpts = {}) {
         }
       : opts.workflowSignalDispatchEnqueues !== undefined
         ? {
-            workflowDispatchService: createMockWorkflowDispatchService(
+            workflowDispatch: mockWorkflowDispatch(
               [],
               opts.workflowSignalDispatchEnqueues,
               opts.workflowSignalDispatchError,
@@ -990,6 +1008,7 @@ function createTestApp(opts: TestAppOpts = {}) {
     repoStore: createStubRepoStore(
       opts.repoDirById,
       opts.runLifecycle ?? "live",
+      opts.readRefs,
     ),
     maxTarballBytes: 10_000_000,
   });
@@ -3018,11 +3037,13 @@ describe("POST /workflows/:anchorRunId/mail", () => {
     const routeMailCalls: RouteMailCall[] = [];
     const runGrantsCalls: RunGrantsCall[] = [];
     const enqueues: WorkflowDispatchEnqueue[] = [];
+    const readRefs: string[] = [];
     const app = createTestApp({
       grants: [manageGrant()],
       routeMailCalls,
       runGrantsCalls,
       workflowDispatchEnqueues: enqueues,
+      readRefs,
       db: {
         deploymentRow,
         assetRow: workflowAssetRow,
@@ -3037,6 +3058,8 @@ describe("POST /workflows/:anchorRunId/mail", () => {
     expect(res.status).toBe(202);
     expect(routeMailCalls).toEqual([]);
     expect(runGrantsCalls).toEqual([]);
+    // The Hub minted the Message-ID, so no consumed entry can name it yet.
+    expect(readRefs).not.toContain(WORKFLOW_RUN_CLAIM_CHECK_REF);
     expect(enqueues).toHaveLength(1);
     const queued = enqueues[0];
     if (queued === undefined) throw new Error("missing durable dispatch");

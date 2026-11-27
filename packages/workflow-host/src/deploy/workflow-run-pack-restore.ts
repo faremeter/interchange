@@ -182,16 +182,16 @@ export function createWorkflowRunPackRestorer(args: {
       repoId,
       ref,
     );
-    if (expectedOldSha !== commitSha) {
-      await substrate.receivePack(
-        hubPrincipal,
-        repoId,
-        ref,
-        pack,
-        commitSha,
-        expectedOldSha,
-      );
-    }
+    // Receive even when the ref is already at the commit: an earlier attempt
+    // can leave it there unsynced, and the receive syncs it.
+    await substrate.receivePack(
+      hubPrincipal,
+      repoId,
+      ref,
+      pack,
+      commitSha,
+      expectedOldSha,
+    );
     await materializeRestoredRefs(substrate, repoId);
 
     // `markRestored` updates both the substrate's incremental-pack cursor and

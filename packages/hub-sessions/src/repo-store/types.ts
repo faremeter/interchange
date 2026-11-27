@@ -2,6 +2,11 @@ import { type } from "arktype";
 import { RepoAction as RepoActionSchema } from "@intx/types/repo";
 import type { RepoKind, RepoId, RepoAction } from "@intx/types/repo";
 
+import type {
+  CommitDispatchEvidence,
+  WorkflowDispatchEvidence,
+} from "../workflow-dispatch-evidence";
+
 export type { RepoKind, RepoId, RepoAction };
 
 /**
@@ -136,6 +141,11 @@ export type ApprovalWaitChange = {
 export type PushFindings = {
   newlyTerminalRuns: NewlyTerminalRun[];
   approvalWaitChanges: ApprovalWaitChange[];
+  /**
+   * The dispatch evidence the commit added, and the consumed entries it
+   * pruned.
+   */
+  dispatchEvidence: CommitDispatchEvidence;
 };
 
 export type ValidatePushResult =
@@ -163,6 +173,18 @@ export type WriteResult = {
  */
 export type InitRepoOpts = {
   gitignore?: string;
+};
+
+/**
+ * How `resolveRef` and `openCommittedReads` read a ref. Pass `durable`
+ * before recording in SQL what the ref names: a failed ref write or a
+ * stopped process can leave a ref that a crash rolls back. The ref is then
+ * read under the repo lock once what the repo's failed or earlier writes
+ * left unsynced is synced, and once its whole git dir is, for a repo an
+ * older store wrote, so the caller must hold no database lock.
+ */
+export type RefReadOpts = {
+  readonly durable?: boolean;
 };
 
 /**
@@ -424,6 +446,11 @@ export type CommittedReads = {
   treeOid(relPath: string): Promise<string | null>;
 };
 
+/**
+ * A call that moves a ref but cannot sync it, a prepared receive's
+ * `commit()` included, still runs the ref's hooks, since readers already
+ * see the ref, and then throws `RefNotDurableError`.
+ */
 export interface RepoStore {
   /**
    * Bookkeeping primitive. Idempotent. Creates the repo directory
@@ -502,7 +529,9 @@ export interface RepoStore {
    * produce none.
    *
    * The pack is validated before it enters the repo's pack directory, so
-   * a rejected pack is never visible to any reader.
+   * a pack that fails validation is never visible to any reader. One whose
+   * ref lands but cannot be synced is visible, and the call then throws
+   * `RefNotDurableError`.
    */
   receivePack(
     principal: Principal,
@@ -543,6 +572,7 @@ export interface RepoStore {
     principal: Principal,
     repoId: RepoId,
     ref: string,
+    opts?: RefReadOpts,
   ): Promise<string | null>;
   /**
    * Enumerate the repo's refs (branches and tags), lexicographically
@@ -600,6 +630,7 @@ export interface RepoStore {
     principal: Principal,
     repoId: RepoId,
     ref: string,
+    opts?: RefReadOpts,
   ): Promise<CommittedReads | null>;
   /**
    * Open cache-backed reads of the committed tree at an explicit commit,
@@ -685,24 +716,37 @@ export type RepoStoreSubscribeEvent = {
 
 /**
  * The outcome of a prepared receive's `commit()`. `already_applied`
- * means the ref already held the pack's tip, so the ref did not move.
- * The pack is still published when it brings objects the store lacks.
+ * means the ref already held the pack's tip, so the ref did not move. The
+ * objects the prepare wrote stay, which restores an object the store lost
+ * when the tip's tree was walked whole.
  */
 export type PackCommitResult =
   | { readonly kind: "already_applied" }
-  | ({ readonly kind: "applied" } & Readonly<PushFindings>);
+  | ({
+      readonly kind: "applied";
+      /**
+       * True when the ref may now also reach commits the store already
+       * held that this receive did not validate, such as commits of
+       * another ref: the findings and the prepared dispatch evidence leave
+       * those out. A commit whose tree holds only the starting
+       * `.gitignore` counts as none.
+       */
+      readonly findingsPartial: boolean;
+    } & Readonly<Omit<PushFindings, "dispatchEvidence">>);
 
 /**
- * A pack that `prepareReceivePack` staged and validated. `commit()`
- * publishes it and moves the ref; `discard()` removes it.
+ * A pack that `prepareReceivePack` staged, validated and wrote into the
+ * repo, where no ref names its objects yet. `commit()` moves the ref;
+ * `discard()` leaves the ref and the objects as they are.
  * `already_applied` means the ref already held the pack's tip when the
- * receive began, the store held every object of that tip, and the pack
- * brought no object the store lacked, so nothing is published.
+ * receive began, and needed nothing of the pack, so nothing stays staged.
  */
 export type PreparedReceivePack =
   | { readonly kind: "already_applied" }
   | {
       readonly kind: "prepared";
+      /** What every commit of the pack records about dispatches. */
+      readonly dispatchEvidence: WorkflowDispatchEvidence;
       commit(): Promise<PackCommitResult>;
       discard(): Promise<void>;
     };
@@ -712,6 +756,20 @@ export class NoBlobAtPathError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "NoBlobAtPathError";
+  }
+}
+
+/**
+ * A receive of a commit the ref held when its pack was staged found that
+ * the ref moved to another line before the receive finished, so the ref
+ * does not move. The message starts with `path_violation`.
+ */
+export class HeldCommitMovedOffError extends Error {
+  constructor(commitSha: string, ref: string, liveTip: string | null) {
+    super(
+      `path_violation: commit ${commitSha} is no longer on ${ref}, which moved to ${String(liveTip)} while the receive was checked; a workflow-run history only grows`,
+    );
+    this.name = "HeldCommitMovedOffError";
   }
 }
 

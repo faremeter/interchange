@@ -48,7 +48,6 @@ import {
   type RoutableRecord,
   type SessionService,
   type SidecarRouter,
-  type WorkflowDispatchService,
   WORKFLOW_RUN_REF,
 } from "@intx/hub-sessions";
 import { formatOffering } from "./offerings";
@@ -70,6 +69,7 @@ import {
   createWorkflowRunTrigger,
   MAX_MAIL_BODY_BYTES,
   WorkflowRunTriggerResponse,
+  type WorkflowDispatch,
 } from "../workflow-run-trigger";
 import {
   parsePageParams,
@@ -200,10 +200,10 @@ export type CreateRunRoutesDeps = {
   // substrate-backed routes then answer 503 rather than fabricating state,
   // since createRunRoutes mounts unconditionally.
   repoStore: RepoStore | null;
-  // The durable dispatch queue a provisioned deployment's trigger enqueues onto.
+  // The durable dispatch a provisioned deployment's trigger enqueues onto.
   // Absent when the hub runs without durable dispatch; the trigger then 503s a
   // provisioned send, exactly as the deployment Trigger route does.
-  workflowDispatchService?: WorkflowDispatchService;
+  workflowDispatch?: WorkflowDispatch;
   workflowLifecycleService?: WorkflowLifecycleService;
   grantStore: GrantStore;
   // Builds a grant store that reads through the given executor; the mail-send
@@ -224,7 +224,7 @@ export function createRunRoutes({
   sidecarRouter,
   eventCollectors,
   repoStore,
-  workflowDispatchService,
+  workflowDispatch,
   workflowLifecycleService,
   grantStore,
   grantStoreFor,
@@ -258,9 +258,7 @@ export function createRunRoutes({
           grantStoreFor,
           authorizeMailSend,
           sidecarRouter,
-          ...(workflowDispatchService !== undefined
-            ? { workflowDispatchService }
-            : {}),
+          ...(workflowDispatch !== undefined ? { workflowDispatch } : {}),
           repoStore,
         })
       : null;

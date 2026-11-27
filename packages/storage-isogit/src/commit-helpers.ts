@@ -1,9 +1,18 @@
 import git, { type WalkerIterate } from "isomorphic-git";
 
 import { hasCode } from "@intx/types/has-code";
+import { hexEncode } from "@intx/types/hex";
 
 import type { CommitSigner } from "./signer";
-import { decodeUTF8, flushRuntime, type StorageRuntime } from "./runtime";
+import {
+  decodeUTF8,
+  flushRuntime,
+  pathExists,
+  syncPath,
+  syncTree,
+  type StorageRuntime,
+} from "./runtime";
+import { forgetRefsSynced } from "./sync-record";
 
 export type SigningArgs = {
   onSign?: (args: { payload: string }) => Promise<{ signature: string }>;
@@ -41,6 +50,140 @@ export class UncertainRefPublicationError extends Error {
     this.oid = oid;
     this.ref = ref;
   }
+}
+
+/**
+ * `writeRefDurably` renamed the ref into place but could not sync it:
+ * readers already see `oid`, and a crash can still lose it. A caller
+ * should finish the work the moved ref implies, then fail the write. The
+ * write marked the repository's refs unsynced, so the next
+ * `syncObjectsAndRefs` or `syncRefs` of the repository, such as a
+ * retry's, syncs every ref.
+ */
+export class RefNotDurableError extends Error {
+  readonly ref: string;
+  readonly oid: string;
+
+  constructor(ref: string, oid: string, cause: unknown) {
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    super(`Ref ${ref} names ${oid} but is not durable: ${detail}`, { cause });
+    this.name = "RefNotDurableError";
+    this.ref = ref;
+    this.oid = oid;
+  }
+}
+
+const OBJECT_ID = /^[0-9a-f]{40}$/;
+
+// A ref write's temporary file in the git dir, which `removeStagedPacks`
+// removes when a crash left it.
+export const REF_WRITE_PREFIX = "ref-write-";
+
+// The names `git check-ref-format` rejects, as isomorphic-git's `writeRef`
+// checks them: `..`, `//`, a leading or trailing `.` or `/`, a component
+// that starts or ends with `.` or ends in `.lock`, `@{`, a bare `@`, and
+// any of `~^:?*[\`. `isValidRefName` also rejects control characters and
+// spaces.
+//
+// Adapted from is-git-ref-name-valid, by way of isomorphic-git.
+// SPDX-License-Identifier: MIT
+// Copyright © Vincent Weevers
+const BAD_REF_NAME = /(^|[/.])([/.]|$)|^@$|@\{|[~^:?*[\\]|\.lock(\/|$)/;
+
+function isValidRefName(ref: string): boolean {
+  if (BAD_REF_NAME.test(ref)) return false;
+  for (const char of ref) {
+    const code = char.charCodeAt(0);
+    if (code <= 0x20 || code === 0x7f) return false;
+  }
+  return true;
+}
+
+/**
+ * Point `ref`, a ref under `refs/`, at `oid` so that a crash leaves the old
+ * value or the new one, never a torn file. The value is written to a file
+ * in the git directory, which no ref listing reads, and renamed over the
+ * ref. On a runtime that syncs, the value, the rename and any directory
+ * the ref needed are durable when this returns. A write that fails after
+ * its checks marks the repository's refs unsynced, as the ref may be in
+ * place unsynced.
+ */
+export async function writeRefDurably(
+  runtime: StorageRuntime,
+  dir: string,
+  ref: string,
+  oid: string,
+): Promise<void> {
+  const segments = ref.split("/");
+  if (
+    segments[0] !== "refs" ||
+    segments.length < 2 ||
+    segments.some((s) => s === "" || s === "." || s === "..")
+  ) {
+    throw new Error(`${JSON.stringify(ref)} is not a ref under refs/`);
+  }
+  if (!isValidRefName(ref)) {
+    throw new Error(`${JSON.stringify(ref)} is not a valid ref name`);
+  }
+  if (!OBJECT_ID.test(oid)) {
+    throw new Error(`${JSON.stringify(oid)} is not an object id`);
+  }
+  try {
+    const gitdir = runtime.path.join(dir, ".git");
+    // A crash between making a directory and syncing it into its parent
+    // leaves the directory but no ref, so a new ref syncs every directory it
+    // needs, whoever made it.
+    const isNew = !(await pathExists(
+      runtime,
+      runtime.path.join(gitdir, ...segments),
+    ));
+    let parent = gitdir;
+    for (const segment of segments.slice(0, -1)) {
+      const child = runtime.path.join(parent, segment);
+      let made = true;
+      try {
+        await runtime.fs.mkdir(child);
+      } catch (cause) {
+        if (!hasCode(cause) || cause.code !== "EEXIST") throw cause;
+        made = false;
+      }
+      if (made || isNew) await syncPath(runtime, parent);
+      parent = child;
+    }
+    const temp = runtime.path.join(
+      gitdir,
+      `${REF_WRITE_PREFIX}${hexEncode(crypto.getRandomValues(new Uint8Array(8)))}`,
+    );
+    try {
+      await runtime.fs.writeFile(temp, `${oid}\n`);
+      await syncPath(runtime, temp);
+      await runtime.fs.rename(temp, runtime.path.join(gitdir, ...segments));
+    } catch (cause) {
+      await runtime.fs.remove(temp, { force: true }).catch(() => undefined);
+      throw cause;
+    }
+    try {
+      await syncPath(runtime, parent);
+      await flushRuntime(runtime);
+    } catch (cause) {
+      throw new RefNotDurableError(ref, oid, cause);
+    }
+  } catch (cause) {
+    forgetRefsSynced(runtime, dir);
+    throw cause;
+  }
+}
+
+/**
+ * Sync every file and directory of the repository's git dir, for a
+ * repository that a store which did not sync may have written.
+ */
+export async function syncRepositoryDurably(
+  runtime: StorageRuntime,
+  dir: string,
+): Promise<void> {
+  await syncTree(runtime, runtime.path.join(dir, ".git"));
+  await flushRuntime(runtime);
 }
 
 /** Restore selected index entries to the currently visible HEAD. */

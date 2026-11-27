@@ -3,8 +3,11 @@ import { dirname } from "node:path";
 
 import { hasCode } from "@intx/types/has-code";
 
-/** Persist a directory's entries, propagating unsupported or failed syncs. */
-export async function syncDirectoryDurable(path: string): Promise<void> {
+/**
+ * Persist a file's contents or a directory's entries, propagating
+ * unsupported or failed syncs.
+ */
+export async function syncPathDurable(path: string): Promise<void> {
   const handle = await fs.open(path, "r");
   try {
     await handle.sync();
@@ -22,7 +25,7 @@ export async function syncRemovedPathDurable(path: string): Promise<void> {
   let directory = dirname(path);
   for (;;) {
     try {
-      await syncDirectoryDurable(directory);
+      await syncPathDurable(directory);
       return;
     } catch (err) {
       const parent = dirname(directory);

@@ -33,10 +33,13 @@ export type WorkflowRunEvent = {
  * seq-ordered in-memory events.
  *
  * The reader is read-only: it composes `RepoStore.getRepoDir` (a pure
- * path computation) with direct `isomorphic-git` tree/blob reads. It
- * never writes, so it carries no authorize gate of its own; callers
- * gate access at their own boundary (the REST routes use a
- * `workflow-run:<runId>` grant check).
+ * path computation) with direct `isomorphic-git` tree/blob reads, and
+ * `readLatestRunEvents` resolves its tip as the Hub through
+ * `RepoStore.resolveRef`. It writes no Git data, so it carries no
+ * authorize gate of its own; callers gate access at their own boundary
+ * (the REST routes use a `workflow-run:<runId>` grant check). The
+ * durable tip read can sync the repository on disk, once for one an
+ * older store wrote.
  */
 export interface WorkflowRunReader {
   /**
@@ -66,7 +69,9 @@ export interface WorkflowRunReader {
    * latest event of each run `include` selects, without reading prior blobs.
    * The returned map holds exactly the selected runs, with `null` for a run
    * directory that has no events yet. A missing Git object propagates
-   * rather than reading as absent history.
+   * rather than reading as absent history. The tip is read durably, as
+   * the caller records outcomes from it, so call it before taking a
+   * database lock.
    */
   readLatestRunEvents(
     repoId: RepoId,
@@ -257,7 +262,9 @@ export function createWorkflowRunReader(
     const events = new Map<string, WorkflowRunEvent | null>();
     const dir = repoDirOrNull(repoId);
     if (dir === null) return { tip: null, events };
-    const tip = await resolveRefOrNull(dir, ref);
+    const tip = await repoStore.resolveRef({ kind: "hub" }, repoId, ref, {
+      durable: true,
+    });
     if (tip === null) return { tip, events };
     // Walk trees by oid rather than by filepath: isomorphic-git reports an
     // absent path and a missing object with the same NotFoundError, and

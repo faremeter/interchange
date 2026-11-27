@@ -11,6 +11,7 @@ export type {
   PriorDeltaReads,
   Principal,
   RefEntry,
+  RefReadOpts,
   RepoAction,
   RepoId,
   RepoKind,
@@ -19,9 +20,11 @@ export type {
   TreeContent,
   ValidatePushResult,
   WriteResult,
+  WriteTreeDeltaArgs,
   WriteTreePreservingPrefixArgs,
 } from "./types";
 export {
+  HeldCommitMovedOffError,
   isPlainPathSegment,
   NoBlobAtPathError,
   RepoRemovedDuringReceiveError,

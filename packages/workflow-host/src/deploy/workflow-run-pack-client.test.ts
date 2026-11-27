@@ -4,6 +4,7 @@ import type { InferenceSource } from "@intx/types/runtime";
 import type { CredentialDelivery } from "@intx/types/credential-delivery";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
 import { PackRejectedError } from "@intx/pack-transport";
+import { RefNotDurableError } from "@intx/storage-isogit";
 import { waitUntil } from "@intx/types/testing";
 import type { InboundDelivery } from "@intx/types/message-id";
 import { inboundDelivery } from "@intx/workflow-host/testing";
@@ -171,6 +172,45 @@ describe("createWorkflowRunPackClient", () => {
     expect(packedTipCommits[0]?.repoId.id).toBe("agent-example-com");
     expect(packedTipCommits[0]?.ref).toBe("refs/heads/main");
     expect(packedTipCommits[0]?.commitSha).toBe("stub-pack-sha");
+  });
+
+  test("push syncs the ref after it builds the pack and before it sends it", async () => {
+    const { store } = createRecordingUnderlyingRepoStore();
+    const steps: string[] = [];
+    const substrate = new Proxy(store, {
+      get: (target, prop, receiver) => {
+        if (prop === "createPack") {
+          return async (...args: Parameters<RepoStore["createPack"]>) => {
+            steps.push("pack");
+            return target.createPack(...args);
+          };
+        }
+        if (prop === "resolveRef") {
+          return async (...args: Parameters<RepoStore["resolveRef"]>) => {
+            steps.push(args[3]?.durable === true ? "durable read" : "read");
+            return target.resolveRef(...args);
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const client = createWorkflowRunPackClient({
+      substrate,
+      hubLink: {
+        async pushWorkflowRunPack() {
+          steps.push("send");
+        },
+      },
+    });
+
+    await client.push({
+      agentAddress: "agent@example.com",
+      generation: 1,
+      repoId: { kind: "workflow-run", id: "agent-example-com" },
+      ref: "refs/heads/main",
+    });
+
+    expect(steps).toEqual(["read", "pack", "durable read", "send"]);
   });
 
   test("push does not commit the packed tip when the hub link rejects the transfer", async () => {
@@ -412,6 +452,52 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
     expect(pushed[0]?.agentAddress).toBe("agent-1@example.com");
     expect(pushed[0]?.repoId.id).toBe("dep-1");
     expect(pushed[0]?.ref).toBe("refs/heads/main");
+  });
+
+  test("a write whose ref lands but cannot sync still pushes it, and fails", async () => {
+    const { store } = createRecordingUnderlyingRepoStore();
+    const unsynced = new RefNotDurableError(
+      "refs/heads/main",
+      "a".repeat(40),
+      new Error("sync failed"),
+    );
+    const registry = createDeploymentAddressRegistry();
+    registry.record("dep-1", {
+      agentAddress: "agent-1@example.com",
+      generation: 1,
+    });
+    const pushed: { repoId: RepoId; ref: string }[] = [];
+    const facade = createWorkflowRunPackPushingRepoStore({
+      isConnectionLost,
+      deriveWorkflowRunRepoId,
+      underlying: new Proxy(store, {
+        get: (target, prop, receiver) =>
+          prop === "writeTreeDelta"
+            ? async () => {
+                throw unsynced;
+              }
+            : Reflect.get(target, prop, receiver),
+      }),
+      packClient: {
+        forget: () => undefined,
+        async push(opts) {
+          pushed.push(opts);
+        },
+      },
+      registry,
+    });
+
+    const repoId: RepoId = { kind: "workflow-run", id: "dep-1" };
+    await expect(
+      facade.writeTreeDelta({ kind: "supervisor" }, repoId, "refs/heads/main", {
+        changedPathPrefixes: new Set(["runs/r-1/"]),
+        message: "append RunCompleted",
+        computeDelta: async () => ({ puts: {}, deletes: [] }),
+      }),
+    ).rejects.toBe(unsynced);
+    await facade.flushWorkflowRunPushes(repoId, "refs/heads/main");
+
+    expect(pushed.map(({ ref }) => ref)).toEqual(["refs/heads/main"]);
   });
 
   test("writeTreePreservingPrefix returns before the pack push finishes", async () => {

@@ -21,6 +21,12 @@ export interface IsogitRuntime {
   rename(oldPath: string, newPath: string): Promise<void>;
   /** Flush pending backend writes at a completed mutation boundary. */
   flush?(): Promise<void>;
+  /**
+   * Make a file's contents, or a directory's entries, durable. A runtime
+   * whose writes are durable once they return, or that makes them durable
+   * in `flush`, leaves it out.
+   */
+  sync?(path: string): Promise<void>;
 }
 
 export interface FileSystemStat {
@@ -181,6 +187,7 @@ export interface StorageRuntime {
   readonly fs: StorageFileSystem;
   readonly path: IsogitPath;
   flush?(): Promise<void>;
+  sync?(path: string): Promise<void>;
 }
 
 function createStorageFileSystem(runtime: IsogitRuntime): StorageFileSystem {
@@ -296,7 +303,85 @@ export function normalizeRuntime(runtime: IsogitRuntime): StorageRuntime {
     ...(runtime.flush === undefined
       ? {}
       : { flush: () => runtime.flush?.() ?? Promise.resolve() }),
+    ...(runtime.sync === undefined
+      ? {}
+      : { sync: (path: string) => runtime.sync?.(path) ?? Promise.resolve() }),
   };
+}
+
+export async function syncPath(
+  runtime: StorageRuntime,
+  path: string,
+): Promise<void> {
+  await runtime.sync?.(path);
+}
+
+// How many paths `syncPaths` syncs at once, so a large set does not run
+// out of file descriptors.
+const SYNC_CONCURRENCY = 16;
+
+/**
+ * Sync each of `paths`, a bounded number at once. After a failure it
+ * starts no more, and it throws the first failure only once the syncs
+ * already running have settled, so a caller that cleans up on failure
+ * does not race them.
+ */
+export async function syncPaths(
+  runtime: StorageRuntime,
+  paths: readonly string[],
+): Promise<void> {
+  if (runtime.sync === undefined) return;
+  const failures: unknown[] = [];
+  let next = 0;
+  await Promise.all(
+    Array.from(
+      { length: Math.min(SYNC_CONCURRENCY, paths.length) },
+      async () => {
+        while (failures.length === 0) {
+          const p = paths[next++];
+          if (p === undefined) return;
+          try {
+            await syncPath(runtime, p);
+          } catch (cause) {
+            failures.push(cause);
+          }
+        }
+      },
+    ),
+  );
+  if (failures.length > 0) throw failures[0];
+}
+
+/** Sync every file and directory under `root`, and `root` itself. */
+export async function syncTree(
+  runtime: StorageRuntime,
+  root: string,
+): Promise<void> {
+  if (runtime.sync === undefined) return;
+  const paths: string[] = [];
+  const walk = async (dir: string): Promise<void> => {
+    for (const name of await runtime.fs.readdir(dir)) {
+      const entry = runtime.path.join(dir, name);
+      if ((await runtime.fs.stat(entry)).isDirectory()) await walk(entry);
+      else paths.push(entry);
+    }
+    paths.push(dir);
+  };
+  await walk(root);
+  await syncPaths(runtime, paths);
+}
+
+export async function pathExists(
+  runtime: StorageRuntime,
+  filepath: string,
+): Promise<boolean> {
+  try {
+    await runtime.fs.access(filepath);
+    return true;
+  } catch (cause) {
+    if (hasCode(cause) && cause.code === "ENOENT") return false;
+    throw cause;
+  }
 }
 
 export async function flushRuntime(runtime: StorageRuntime): Promise<void> {

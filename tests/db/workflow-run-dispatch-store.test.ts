@@ -646,6 +646,125 @@ describe.skipIf(!harnessDbEnvAvailable())(
       );
     });
 
+    test("lists only the unsettled dispatches a key or a mail's Message-ID names", async () => {
+      const store = createWorkflowRunDispatchStore(h.db);
+      const mail = async (messageId: string) =>
+        (
+          await store.enqueue({
+            anchorRunId: ANCHOR_RUN_ID,
+            messageId,
+            senderAddress: SENDER_ADDRESS,
+            rawMessage: new TextEncoder().encode(messageId),
+            stepGrants: [],
+          })
+        ).dispatch;
+      const byKey = await mail("<by-key@example>");
+      const byMessageId = await mail("<by-message-id@example>");
+      await mail("<unnamed@example>");
+      const { dispatch: signal } = await store.enqueueSignal({
+        anchorRunId: ANCHOR_RUN_ID,
+        signal: {
+          agentAddress: "workflow@tenant.example",
+          runId: "workflow@tenant.example",
+          signalName: "continue",
+          signalId: "signal-1",
+          payload: {},
+        },
+      });
+
+      const listed = await store.listUnsettledKeysNamed(ANCHOR_RUN_ID, {
+        keys: [byKey.deliveryKey, signal.deliveryKey],
+        messageIds: [byMessageId.messageId],
+      });
+      expect(listed.map((row) => row.deliveryKey)).toEqual([
+        byKey.deliveryKey,
+        byMessageId.deliveryKey,
+        signal.deliveryKey,
+      ]);
+      expect(listed.map((row) => row.rawMessage === null)).toEqual([
+        true,
+        true,
+        false,
+      ]);
+      expect(
+        await store.listUnsettledKeysNamed(ANCHOR_RUN_ID, {
+          keys: [],
+          messageIds: [],
+        }),
+      ).toEqual([]);
+      // More names than one statement can bind.
+      const unknown = Array.from(
+        { length: 70_000 },
+        (_, i) => `unknown-${String(i)}`,
+      );
+      expect(
+        (
+          await store.listUnsettledKeysNamed(ANCHOR_RUN_ID, {
+            keys: [...unknown, signal.deliveryKey],
+            messageIds: [...unknown, byMessageId.messageId],
+          })
+        ).map((row) => row.deliveryKey),
+      ).toEqual([byMessageId.deliveryKey, signal.deliveryKey]);
+    });
+
+    test("resolves many dispatches at once and leaves one already resolved as it is", async () => {
+      const store = createWorkflowRunDispatchStore(h.db);
+      const mail = async (messageId: string) =>
+        (
+          await store.enqueue({
+            anchorRunId: ANCHOR_RUN_ID,
+            messageId,
+            senderAddress: SENDER_ADDRESS,
+            rawMessage: new TextEncoder().encode(messageId),
+            stepGrants: [],
+          })
+        ).dispatch;
+      const settled = await mail("<settled@example>");
+      const failed = await mail("<failed@example>");
+      const resolvedFirst = await mail("<resolved-first@example>");
+      const untouched = await mail("<untouched@example>");
+      await store.settle(ANCHOR_RUN_ID, resolvedFirst.deliveryKey);
+
+      await store.resolveMany(
+        ANCHOR_RUN_ID,
+        [
+          { deliveryKey: settled.deliveryKey },
+          {
+            deliveryKey: failed.deliveryKey,
+            failure: { code: "malformed_mail", message: "Missing MIME bytes" },
+          },
+          {
+            deliveryKey: resolvedFirst.deliveryKey,
+            failure: { code: "late", message: "too late" },
+          },
+        ],
+        new Date(),
+      );
+
+      const rows = await h.db
+        .select({
+          deliveryKey: workflowRunDispatch.deliveryKey,
+          status: workflowRunDispatch.status,
+          failureCode: workflowRunDispatch.failureCode,
+        })
+        .from(workflowRunDispatch)
+        .where(eq(workflowRunDispatch.anchorRunId, ANCHOR_RUN_ID));
+      const byKey = new Map(rows.map((row) => [row.deliveryKey, row]));
+      expect(byKey.get(settled.deliveryKey)).toMatchObject({
+        status: "settled",
+        failureCode: null,
+      });
+      expect(byKey.get(failed.deliveryKey)).toMatchObject({
+        status: "failed",
+        failureCode: "malformed_mail",
+      });
+      expect(byKey.get(resolvedFirst.deliveryKey)).toMatchObject({
+        status: "settled",
+        failureCode: null,
+      });
+      expect(byKey.get(untouched.deliveryKey)?.status).toBe("pending");
+    });
+
     test("acknowledges only the row of the sender the key names", async () => {
       await seedAllocatedSidecar(1);
       const store = createWorkflowRunDispatchStore(h.db);

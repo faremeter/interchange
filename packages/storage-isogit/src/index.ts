@@ -14,7 +14,9 @@ import {
 } from "./pack-receive";
 import { createDeployPack, createNegotiatedPack } from "./pack-send";
 import { collectReachableObjects } from "./object-walk";
-import { createObjectPresence } from "./object-presence";
+import { syncRepositoryDurably, writeRefDurably } from "./commit-helpers";
+import { createDurableObjectWrites } from "./loose-objects";
+import { holdSyncRecord, syncObjectsAndRefs, syncRefs } from "./sync-record";
 import { writeTreeToDisk } from "./write-tree";
 import { indexPackIntoGitDir } from "./index-pack";
 import {
@@ -32,13 +34,13 @@ import {
 export type { ContextStore, AuditStore, CommitSigner };
 export type { StagedPack } from "./pack-receive";
 export type { IncludeShaPredicate } from "./pack-send";
-export type { ObjectPresence } from "./object-presence";
 export type { DurableMirrorReads, ParkedReplyTargetBuffer };
 export type { InitRepoOpts } from "./init";
 export type { IsogitPath, IsogitRuntime } from "./runtime";
 export { writeTreeToDisk } from "./write-tree";
 export { indexPackIntoGitDir } from "./index-pack";
 export { HUB_REF_NAMESPACE } from "./hub-refs";
+export { RefNotDurableError } from "./commit-helpers";
 export {
   DEFAULT_PACK_MATERIALIZATION_LIMITS,
   type PackMaterializationLimits,
@@ -75,6 +77,15 @@ export function createIsogitStorage(runtime: IsogitRuntime) {
     listBranches: bindRepoDir(storageRuntime, listBranches),
     logHistory: bindRepoDir(storageRuntime, logHistory),
     stagePack: bindRepoDir(storageRuntime, stagePack),
+    writeRefDurably: bindRepoDir(storageRuntime, writeRefDurably),
+    syncRepositoryDurably: bindRepoDir(storageRuntime, syncRepositoryDurably),
+    createDurableObjectWrites: bindRepoDir(
+      storageRuntime,
+      createDurableObjectWrites,
+    ),
+    syncObjectsAndRefs: bindRepoDir(storageRuntime, syncObjectsAndRefs),
+    holdSyncRecord: bindRepoDir(storageRuntime, holdSyncRecord),
+    syncRefs: bindRepoDir(storageRuntime, syncRefs),
     removeStagedPacks: bindRepoDir(storageRuntime, removeStagedPacks),
     removeOrphanPackIndexes: bindRepoDir(
       storageRuntime,
@@ -86,7 +97,6 @@ export function createIsogitStorage(runtime: IsogitRuntime) {
       storageRuntime,
       collectReachableObjects,
     ),
-    createObjectPresence: bindRepoDir(storageRuntime, createObjectPresence),
     writeTreeToDisk: bindRepoDir(storageRuntime, writeTreeToDisk),
     indexPackIntoGitDir: bindRepoDir(storageRuntime, indexPackIntoGitDir),
   };

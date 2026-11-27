@@ -1,10 +1,13 @@
-import { describe, test, expect, afterAll, beforeAll } from "bun:test";
+import { describe, test, expect, afterAll, beforeAll, spyOn } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import git, { type TreeEntry } from "isomorphic-git";
 import { generateKeyPair } from "@intx/crypto";
-import { collectReachableObjects } from "@intx/storage-isogit/node";
+import {
+  collectReachableObjects,
+  RefNotDurableError,
+} from "@intx/storage-isogit/node";
 import { deriveDeliveryKey } from "@intx/types/message-id";
 import type { KeyPair } from "@intx/types/runtime";
 import { signalName } from "@intx/types/signals";
@@ -3148,6 +3151,33 @@ describe("workflowRunKindHandler.validatePush — claim-check subtree shape", ()
     const r = await validate(prospective, { priorFiles: prior });
     expect(r.ok).toBe(true);
   });
+
+  test("reports as dispatch evidence only the consumed entries a push adds", async () => {
+    const kept = consumedBody("msg-1", 100, "run-1", 200);
+    const prior = {
+      [consumedPathFor(ADDRESS_SEG, "msg-1")]: kept,
+      [processingPathFor(ADDRESS_SEG, 101, "msg-2")]: inboxBody("msg-2", 101),
+    };
+    const prospective = {
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [consumedPathFor(ADDRESS_SEG, "msg-1")]: kept,
+      [consumedPathFor(ADDRESS_SEG, "msg-2")]: consumedBody(
+        "msg-2",
+        101,
+        "run-2",
+        201,
+      ),
+    };
+    const r = await validate(prospective, { priorFiles: prior });
+    expect(r).toEqual({
+      ok: true,
+      dispatchEvidence: {
+        consumed: [{ messageId: "msg-2", address: ADDRESS }],
+        accepted: [],
+        pruned: [],
+      },
+    });
+  });
 });
 
 // ---------------------------------------------------------------------
@@ -3276,6 +3306,54 @@ describe("claim-check API — enqueueInbox", () => {
       outcome: "already-present",
       reason: "processing",
     });
+  });
+
+  // A caller acks on already-present, so the ref it read must be durable.
+  test("a retry after an enqueue whose ref did not sync syncs the ref before it reports already-present", async () => {
+    const { store, repoId, principal } =
+      await makeClaimCheckStore("cc-enq-sync-");
+    const args = {
+      address: ADDRESS,
+      messageId: "msg-1",
+      authenticatedSender: SENDER,
+      receivedAt: 100,
+    };
+    // Create the events ref first, so the failing enqueue below syncs only
+    // its directory.
+    await enqueueInbox(store, principal, repoId, {
+      ...args,
+      messageId: "msg-0",
+    });
+    const refDir = path.join(store.getRepoDir(repoId), ".git", "refs", "heads");
+    const synced: string[] = [];
+    let failing: string | null = refDir;
+    const open = fs.promises.open;
+    const spy = spyOn(fs.promises, "open").mockImplementation(
+      async (target, flags, mode) => {
+        const handle = await open(target, flags, mode);
+        const sync = handle.sync.bind(handle);
+        spyOn(handle, "sync").mockImplementation(async () => {
+          if (String(target) === failing) throw new Error("sync failed");
+          synced.push(String(target));
+          await sync();
+        });
+        return handle;
+      },
+    );
+    try {
+      await expect(
+        enqueueInbox(store, principal, repoId, args),
+      ).rejects.toThrow("not durable");
+      failing = null;
+      synced.length = 0;
+      expect(await enqueueInbox(store, principal, repoId, args)).toEqual({
+        outcome: "already-present",
+        reason: "duplicate",
+      });
+    } finally {
+      spy.mockRestore();
+    }
+    expect(synced).toContain(refDir);
   });
 });
 
@@ -3609,6 +3687,42 @@ describe("claim-check substrate FIFO invariant", () => {
   // (e.g. `100-<key of msg-B>` < `99-<key of msg-A>` because
   // '1' < '9'). After the fix the substrate sorts by parsed numeric
   // receivedAt and the earlier message wins.
+  test("a dequeue whose move lands but cannot sync still hands on the entry it moved", async () => {
+    const { store, repoId, principal } = await makeClaimCheckStore(
+      "cc-dequeue-unsynced-",
+    );
+    await enqueueInbox(store, principal, repoId, {
+      address: ADDRESS,
+      messageId: "msg-A",
+      authenticatedSender: SENDER,
+      receivedAt: 1,
+    });
+    const unsynced = {
+      ...store,
+      writeTreeDelta: async (
+        ...args: Parameters<typeof store.writeTreeDelta>
+      ) => {
+        const written = await store.writeTreeDelta(...args);
+        throw new RefNotDurableError(
+          args[2],
+          written.commitSha,
+          new Error("sync failed"),
+        );
+      },
+    };
+
+    const dequeued = await dequeueToProcessing(
+      unsynced,
+      principal,
+      repoId,
+      ADDRESS,
+    );
+    expect(dequeued?.envelope.messageId).toBe("msg-A");
+    expect(
+      await dequeueToProcessing(store, principal, repoId, ADDRESS),
+    ).toBeNull();
+  });
+
   test("non-uniform receivedAt widths still respect FIFO (msg-A at 99 dequeues before msg-B at 100)", async () => {
     const { store, repoId, principal } =
       await makeClaimCheckStore("cc-fifo-width-");
@@ -5418,6 +5532,29 @@ describe("workflowRunKindHandler.validatePush — retention watermark contract",
     expect(r.reason).toMatch(/watermark regressed/);
   });
 
+  test("reports the consumed entries a push prunes as dispatch evidence", async () => {
+    const prior = {
+      [watermarkPathFor(ADDRESS_SEG)]: watermarkBody(0),
+      [consumedPathFor(ADDRESS_SEG, "msg-old")]: consumedBody(
+        "msg-old",
+        100,
+        "run-old",
+        150,
+      ),
+    };
+    const r = await validate(
+      {
+        [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+        [watermarkPathFor(ADDRESS_SEG)]: watermarkBody(101),
+      },
+      { priorFiles: prior },
+    );
+    if (!r.ok) throw new Error(`expected ok, got: ${r.reason}`);
+    expect(r.dispatchEvidence?.pruned).toEqual([
+      { address: ADDRESS, identity: "msg-old" },
+    ]);
+  });
+
   // A non-suffix deletion (drop a recent consumed entry while keeping
   // an older one) is ACCEPTED when both entries sit below the
   // watermark. The suffix relation is not enforced; a retained entry
@@ -6175,6 +6312,82 @@ async function scopedBody(
   };
 }
 
+describe("workflowRunKindHandler.validatePush -- dispatch evidence", () => {
+  const eventPath = (seq: number) =>
+    `${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/${String(seq)}.json`;
+  const received = (seq: number, signalId: unknown) =>
+    eventBody(seq, "SignalReceived", { signalName: "continue", signalId });
+
+  test("reports the dispatches only of the events a push adds", async () => {
+    const prior = {
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [eventPath(0)]: eventBody(0, "RunStarted", {
+        consumedDeliveryKey: "dk1:old",
+      }),
+    };
+    const r = await validate(
+      { ...prior, [eventPath(1)]: received(1, "sig-1") },
+      { priorFiles: prior },
+    );
+    if (!r.ok) throw new Error(`expected ok, got: ${r.reason}`);
+    expect(r.dispatchEvidence).toEqual({
+      consumed: [],
+      accepted: [
+        { runId: "run-a", kind: "signal", id: "sig-1", legacy: false },
+      ],
+      pruned: [],
+    });
+  });
+
+  test("reports the dispatches of a run log that arrives already sealed", async () => {
+    const r = await validate({
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events.jsonl`]: [
+        eventBody(0, "RunStarted", { consumedDeliveryKey: "dk1:mail" }),
+        received(1, "sig-1"),
+        eventBody(2, "RunCompleted"),
+        "",
+      ].join("\n"),
+    });
+    if (!r.ok) throw new Error(`expected ok, got: ${r.reason}`);
+    expect(r.dispatchEvidence?.accepted).toEqual([
+      { runId: "run-a", kind: "mail", id: "dk1:mail", legacy: false },
+      { runId: "run-a", kind: "signal", id: "sig-1", legacy: false },
+    ]);
+  });
+
+  test("rejects a push that adds a malformed SignalReceived", async () => {
+    const r = await validate({
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [eventPath(0)]: eventBody(0, "RunStarted"),
+      [eventPath(1)]: received(1, 7),
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(/workflow_dispatch_signal_invalid/);
+  });
+
+  test("accepts a push over a malformed SignalReceived the store already holds", async () => {
+    const prior = {
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [eventPath(0)]: eventBody(0, "RunStarted"),
+      [eventPath(1)]: received(1, 7),
+    };
+    const r = await validate(
+      {
+        ...prior,
+        [eventPath(2)]: eventBody(2, "SignalAwaited", {
+          stepId: "ask",
+          signalName: "continue",
+        }),
+      },
+      { priorFiles: prior },
+    );
+    if (!r.ok) throw new Error(`expected ok, got: ${r.reason}`);
+    expect(r.dispatchEvidence?.accepted).toEqual([]);
+  });
+});
+
 describe("workflowRunKindHandler.validatePush — sender-scoped claim-check entries", () => {
   test("accepts an inbox entry filed under its delivery key", async () => {
     const { key, body } = await scopedBody(SENDER_A, "<m@x>", 100);
@@ -6182,7 +6395,10 @@ describe("workflowRunKindHandler.validatePush — sender-scoped claim-check entr
       [WORKFLOW_RUN_GITIGNORE_PATH]: "",
       [inboxPathFor(ADDRESS_SEG, 100, key)]: body,
     });
-    expect(r).toEqual({ ok: true });
+    expect(r).toEqual({
+      ok: true,
+      dispatchEvidence: { consumed: [], accepted: [], pruned: [] },
+    });
   });
 
   test("accepts two senders' entries that share one Message-ID", async () => {
@@ -6193,7 +6409,10 @@ describe("workflowRunKindHandler.validatePush — sender-scoped claim-check entr
       [inboxPathFor(ADDRESS_SEG, 100, a.key)]: a.body,
       [inboxPathFor(ADDRESS_SEG, 101, b.key)]: b.body,
     });
-    expect(r).toEqual({ ok: true });
+    expect(r).toEqual({
+      ok: true,
+      dispatchEvidence: { consumed: [], accepted: [], pruned: [] },
+    });
   });
 
   test("rejects a delivery key that is not the key of its sender and Message-ID", async () => {

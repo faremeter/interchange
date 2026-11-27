@@ -11,10 +11,7 @@ import { IsogitStore as RuntimeIsogitStore } from "./store";
 import { assertPackInflationWithinBounds } from "./pack-inflation-guard";
 import type { PackMaterializationLimits } from "./materialization-limits";
 export { createNodeIsogitRuntime } from "./node-runtime";
-export {
-  syncDirectoryDurable,
-  syncRemovedPathDurable,
-} from "./node-durability";
+export { syncPathDurable, syncRemovedPathDurable } from "./node-durability";
 export { countLooseObjects, gitBytes } from "./node-metrics";
 
 export {
@@ -26,13 +23,13 @@ export {
   type AuditStore,
   type StagedPack,
   type IncludeShaPredicate,
-  type ObjectPresence,
   type InitRepoOpts,
   type IsogitPath,
   type IsogitRuntime,
   DEFAULT_PACK_MATERIALIZATION_LIMITS,
   type PackMaterializationLimits,
   HUB_REF_NAMESPACE,
+  RefNotDurableError,
 } from "./index";
 
 export const runtime = createNodeIsogitRuntime();
@@ -43,9 +40,10 @@ export const {
   collectReachableObjects,
   createAndSwitchBranch,
   createDeployPack,
+  createDurableObjectWrites,
   createNegotiatedPack,
-  createObjectPresence,
   currentBranch,
+  holdSyncRecord,
   initAgentRepo,
   initRepo,
   listBranches,
@@ -54,6 +52,10 @@ export const {
   removeStagedPacks,
   stagePack,
   switchBranch,
+  syncObjectsAndRefs,
+  syncRefs,
+  syncRepositoryDurably,
+  writeRefDurably,
   writeTreeToDisk,
   indexPackIntoGitDir: rawIndexPackIntoGitDir,
 } = storage;

@@ -1,16 +1,26 @@
 import { type } from "arktype";
 
-import { correlationIdFromSignalName } from "@intx/types";
+import { DELIVERY_KEY_PREFIX } from "@intx/types/message-id";
+import { SignalDeliverFrame } from "@intx/types/sidecar";
 
 import type { CommittedReads } from "./repo-store";
+import {
+  acceptedDispatchOf,
+  type AcceptedWorkflowDispatch,
+  type ConsumedWorkflowDispatch,
+  type WorkflowDispatchEvidence,
+} from "./workflow-dispatch-evidence";
 import {
   splitCombinedEventLog,
   WORKFLOW_RUN_EVENTS_FILE,
 } from "./workflow-run-event-log";
 import {
+  addressSegmentFor,
+  parseQueueFilename,
   WORKFLOW_RUN_ADDRESSES_PREFIX,
   WORKFLOW_RUN_CONSUMED_DIR,
   WORKFLOW_RUN_EVENTS_DIR,
+  WORKFLOW_RUN_PROCESSING_DIR,
   WORKFLOW_RUN_RUNS_PREFIX,
 } from "./workflow-run-kind";
 
@@ -25,54 +35,12 @@ const ConsumedEnvelope = type({
   "+": "ignore",
 });
 
-/**
- * A consumed claim-check entry. `deliveryKey` is absent on a legacy entry,
- * which a sidecar filed under the bare Message-ID.
- */
-export type ConsumedWorkflowDispatch = {
-  readonly messageId: string;
-  readonly deliveryKey?: string;
-  readonly address: string;
-  readonly rejection?: {
-    readonly code: string;
-    readonly message: string;
-  };
-};
-
-const SignalReceived = type({
-  type: "'SignalReceived'",
-  signalName: "string",
-  signalId: "string",
-  "+": "ignore",
-});
-
-const RunStarted = type({
-  type: "'RunStarted'",
-  "consumedDeliveryKey?": "string",
-  "consumedMessageId?": "string",
-  "+": "ignore",
-});
-
 export type ReceivedWorkflowSignal = {
   readonly runId: string;
   readonly signalId: string;
 };
 
-export type AcceptedWorkflowDispatch = {
-  readonly runId: string;
-  /**
-   * The dispatch identity the event records: a delivery key or a signal id.
-   * `legacy` marks an id that can be a bare Message-ID from a sidecar that
-   * predates the delivery key: a `RunStarted.consumedMessageId`, or the id of
-   * a `SignalReceived` on a control-plane signal name.
-   */
-  readonly id: string;
-  readonly legacy: boolean;
-  /** Event source: SignalReceived also proves mail used to resume an input gate. */
-  readonly kind: "mail" | "signal";
-};
-
-function projectAcceptedDispatch(
+function acceptedDispatchOfLine(
   raw: string,
   path: string,
 ): Omit<AcceptedWorkflowDispatch, "runId"> | null {
@@ -84,42 +52,37 @@ function projectAcceptedDispatch(
       cause,
     });
   }
-  if (typeof decoded !== "object" || decoded === null || !("type" in decoded)) {
-    return null;
+  return acceptedDispatchOf(decoded, path);
+}
+
+function consumedDispatchOf(
+  raw: Uint8Array,
+  path: string,
+): ConsumedWorkflowDispatch {
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(new TextDecoder().decode(raw));
+  } catch (cause) {
+    throw new Error(`workflow_dispatch_consumed_invalid_json: ${path}`, {
+      cause,
+    });
   }
-  if (decoded.type === "SignalReceived") {
-    const signal = SignalReceived(decoded);
-    if (signal instanceof type.errors) {
-      throw new Error(
-        `workflow_dispatch_signal_invalid: ${path}: ${signal.summary}`,
-      );
-    }
-    // Mail that resumes an input gate arrives on a control-plane signal name,
-    // and a sidecar that predates the delivery key recorded its bare
-    // Message-ID as the signal id. A caller cannot deliver on a control-plane
-    // name, and the hub mints the ids of the approvals that do, so no caller
-    // chooses such an id to match another sender's Message-ID.
-    return {
-      kind: "signal",
-      id: signal.signalId,
-      legacy: correlationIdFromSignalName(signal.signalName) !== undefined,
-    };
+  const envelope = ConsumedEnvelope(decoded);
+  if (envelope instanceof type.errors) {
+    throw new Error(
+      `workflow_dispatch_consumed_invalid: ${path}: ${envelope.summary}`,
+    );
   }
-  if (decoded.type === "RunStarted") {
-    const started = RunStarted(decoded);
-    if (started instanceof type.errors) {
-      throw new Error(
-        `workflow_dispatch_run_started_invalid: ${path}: ${started.summary}`,
-      );
-    }
-    if (started.consumedDeliveryKey !== undefined) {
-      return { kind: "mail", id: started.consumedDeliveryKey, legacy: false };
-    }
-    return started.consumedMessageId === undefined
-      ? null
-      : { kind: "mail", id: started.consumedMessageId, legacy: true };
-  }
-  return null;
+  return {
+    messageId: envelope.messageId,
+    ...(envelope.deliveryKey !== undefined
+      ? { deliveryKey: envelope.deliveryKey }
+      : {}),
+    address: envelope.address,
+    ...(envelope.rejection !== undefined
+      ? { rejection: envelope.rejection }
+      : {}),
+  };
 }
 
 /** Enumerate dispatches durably accepted by one live or sealed run log. */
@@ -150,7 +113,7 @@ export async function listAcceptedWorkflowDispatches(
       const line = lines[index];
       if (line === undefined) continue;
       accept(
-        projectAcceptedDispatch(
+        acceptedDispatchOfLine(
           line,
           `${runPath}/${WORKFLOW_RUN_EVENTS_FILE}:${String(index + 1)}`,
         ),
@@ -172,7 +135,7 @@ export async function listAcceptedWorkflowDispatches(
     const raw = new TextDecoder().decode(
       await reads.readBlobByOid(eventEntry.oid),
     );
-    accept(projectAcceptedDispatch(raw, `${eventsPath}/${eventEntry.name}`));
+    accept(acceptedDispatchOfLine(raw, `${eventsPath}/${eventEntry.name}`));
     if (remaining?.size === 0) break;
   }
   return accepted.reverse();
@@ -188,50 +151,196 @@ export async function listReceivedWorkflowSignals(
     .map((dispatch) => ({ runId, signalId: dispatch.id }));
 }
 
-/**
- * Enumerate the workflow-run claim-check's retained consumed index. The kind
- * validator guarantees this tree shape before the ref advances; the runtime
- * validator here keeps the Git-to-database projection fail-closed if that
- * invariant is ever violated.
- */
-export async function listConsumedWorkflowDispatches(
+function consumedPathFor(address: string): string {
+  return `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${addressSegmentFor(address)}/${WORKFLOW_RUN_CONSUMED_DIR}`;
+}
+
+/** Whether `address` holds mail filed under one of `identities` in processing. */
+export async function processingHoldsWorkflowDispatch(
   reads: CommittedReads,
+  address: string,
+  identities: ReadonlySet<string>,
+): Promise<boolean> {
+  const processing = await reads.listDir(
+    `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${addressSegmentFor(address)}/${WORKFLOW_RUN_PROCESSING_DIR}`,
+  );
+  return processing.some((entry) => {
+    const identity = parseQueueFilename(entry.name)?.identity;
+    return identity !== undefined && identities.has(identity);
+  });
+}
+
+/**
+ * The consumed claim-check entries that `address` filed under one of
+ * `identities`: delivery keys or, for legacy entries, bare Message-IDs.
+ * One listing finds them, and only their blobs are read. The kind
+ * validator guarantees their shape before the ref advances; parsing them
+ * again keeps the projection fail-closed if that invariant is ever
+ * violated.
+ */
+export async function readConsumedWorkflowDispatches(
+  reads: CommittedReads,
+  address: string,
+  identities: ReadonlySet<string>,
 ): Promise<ConsumedWorkflowDispatch[]> {
-  const consumed: ConsumedWorkflowDispatch[] = [];
-  for (const addressEntry of await reads.listDir(
-    WORKFLOW_RUN_ADDRESSES_PREFIX,
-  )) {
-    if (addressEntry.type !== "tree") continue;
-    const consumedPath = `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${addressEntry.name}/${WORKFLOW_RUN_CONSUMED_DIR}`;
-    for (const entry of await reads.listDir(consumedPath)) {
-      if (entry.type !== "blob" || !entry.name.endsWith(".json")) continue;
-      const raw = await reads.readBlobByOid(entry.oid);
-      let decoded: unknown;
-      try {
-        decoded = JSON.parse(new TextDecoder().decode(raw));
-      } catch (cause) {
-        throw new Error(
-          `workflow_dispatch_consumed_invalid_json: ${consumedPath}/${entry.name}`,
-          { cause },
-        );
-      }
-      const envelope = ConsumedEnvelope(decoded);
-      if (envelope instanceof type.errors) {
-        throw new Error(
-          `workflow_dispatch_consumed_invalid: ${consumedPath}/${entry.name}: ${envelope.summary}`,
-        );
-      }
-      consumed.push({
-        messageId: envelope.messageId,
-        ...(envelope.deliveryKey !== undefined
-          ? { deliveryKey: envelope.deliveryKey }
-          : {}),
-        address: envelope.address,
-        ...(envelope.rejection !== undefined
-          ? { rejection: envelope.rejection }
-          : {}),
-      });
+  if (identities.size === 0) return [];
+  const consumedPath = consumedPathFor(address);
+  const found: ConsumedWorkflowDispatch[] = [];
+  for (const entry of await reads.listDir(consumedPath)) {
+    if (entry.type !== "blob" || !entry.name.endsWith(".json")) continue;
+    if (!identities.has(entry.name.slice(0, -".json".length))) continue;
+    found.push(
+      consumedDispatchOf(
+        await reads.readBlobByOid(entry.oid),
+        `${consumedPath}/${entry.name}`,
+      ),
+    );
+  }
+  return found;
+}
+
+/**
+ * What evidence matches an unsettled dispatch by. A signal's frame names the
+ * run it is for; a mail is for its deployment, so its bytes are not needed.
+ */
+export type UnsettledDispatch = {
+  readonly deliveryKey: string;
+  readonly messageId: string;
+  readonly kind: "mail" | "signal";
+  readonly rawMessage: Uint8Array | null;
+};
+
+export type DispatchOutcome =
+  | { readonly status: "settled" }
+  | {
+      readonly status: "failed";
+      readonly code: string;
+      readonly message: string;
+    };
+
+/** The run a dispatch is for: a mail's deployment, or a signal's target. */
+export function targetRunOf(
+  dispatch: UnsettledDispatch,
+  anchorRunId: string,
+): string {
+  if (dispatch.kind === "mail") return anchorRunId;
+  if (dispatch.rawMessage === null) {
+    throw new Error(`signal dispatch ${dispatch.deliveryKey} has no frame`);
+  }
+  return SignalDeliverFrame.assert(
+    JSON.parse(new TextDecoder().decode(dispatch.rawMessage)),
+  ).runId;
+}
+
+// The id a consumed entry names, and whether it can be a bare Message-ID:
+// a legacy entry has no delivery key.
+function consumedId(consumed: ConsumedWorkflowDispatch): {
+  id: string;
+  legacy: boolean;
+} {
+  return consumed.deliveryKey === undefined
+    ? { id: consumed.messageId, legacy: true }
+    : { id: consumed.deliveryKey, legacy: false };
+}
+
+// An id with the delivery-key prefix is a key, even from legacy evidence:
+// the hub refuses a relayed Message-ID with the prefix, so no legacy record
+// holds one.
+function namesByMessageId(id: string, legacy: boolean): boolean {
+  return legacy && !id.startsWith(DELIVERY_KEY_PREFIX);
+}
+
+/**
+ * The rows `settleFromEvidence` can settle from `evidence`: those keyed by
+ * an id it names, and the mail rows whose Message-ID a legacy id names.
+ */
+export function rowsNamedByEvidence(
+  anchor: { readonly address: string },
+  evidence: WorkflowDispatchEvidence,
+): { keys: string[]; messageIds: string[] } {
+  const keys = new Set<string>();
+  const messageIds = new Set<string>();
+  const name = ({ id, legacy }: { id: string; legacy: boolean }) => {
+    keys.add(id);
+    if (namesByMessageId(id, legacy)) messageIds.add(id);
+  };
+  for (const consumed of evidence.consumed) {
+    if (consumed.address === anchor.address) name(consumedId(consumed));
+  }
+  for (const accepted of evidence.accepted) name(accepted);
+  return { keys: [...keys], messageIds: [...messageIds] };
+}
+
+/**
+ * Decide what `evidence` settles among a deployment's `unsettled` rows, and
+ * return the rows it leaves. Evidence a run log holds names only the rows
+ * for that run.
+ */
+export function settleFromEvidence<D extends UnsettledDispatch>(
+  anchor: { readonly id: string; readonly address: string },
+  unsettled: readonly D[],
+  evidence: WorkflowDispatchEvidence,
+): {
+  outcomes: Map<string, DispatchOutcome>;
+  remaining: Map<string, D>;
+} {
+  const remaining = new Map(
+    unsettled.map((dispatch) => [dispatch.deliveryKey, dispatch]),
+  );
+  const mailKeysByMessageId = new Map<string, string[]>();
+  for (const dispatch of unsettled) {
+    if (dispatch.kind !== "mail") continue;
+    const keys = mailKeysByMessageId.get(dispatch.messageId) ?? [];
+    keys.push(dispatch.deliveryKey);
+    mailKeysByMessageId.set(dispatch.messageId, keys);
+  }
+  // The unsettled rows a piece of evidence names: the row keyed by its id,
+  // and for a legacy id that is not a key, every unsettled mail row of
+  // this anchor with that Message-ID. A sidecar that predates the delivery
+  // key recorded the bare Message-ID and de-duplicated by it alone, so its
+  // one record stands for every sender's mail with that Message-ID. The
+  // legacy branch can go once no run log or claim-check that such a
+  // sidecar wrote remains.
+  const rowsNamedBy = (id: string, legacy: boolean): string[] => {
+    const keys = remaining.has(id) ? [id] : [];
+    if (!namesByMessageId(id, legacy)) return keys;
+    for (const key of mailKeysByMessageId.get(id) ?? []) {
+      if (key !== id && remaining.has(key)) keys.push(key);
+    }
+    return keys;
+  };
+  const outcomes = new Map<string, DispatchOutcome>();
+  for (const consumed of evidence.consumed) {
+    if (consumed.address !== anchor.address) continue;
+    const { id, legacy } = consumedId(consumed);
+    const keys = rowsNamedBy(id, legacy);
+    for (const key of keys) {
+      if (remaining.get(key)?.kind !== "mail") continue;
+      outcomes.set(
+        key,
+        consumed.rejection === undefined
+          ? { status: "settled" }
+          : {
+              status: "failed",
+              code: consumed.rejection.code,
+              message: consumed.rejection.message,
+            },
+      );
+      remaining.delete(key);
     }
   }
-  return consumed;
+  for (const accepted of evidence.accepted) {
+    for (const key of rowsNamedBy(accepted.id, accepted.legacy)) {
+      const dispatch = remaining.get(key);
+      if (dispatch === undefined) continue;
+      if (targetRunOf(dispatch, anchor.id) !== accepted.runId) continue;
+      // Mail resuming an input gate is also recorded as SignalReceived.
+      // The Hub's key uniqueness spans both dispatch kinds within this
+      // anchor; RunStarted alone still cannot prove a signal delivery.
+      if (accepted.kind === "mail" && dispatch.kind !== "mail") continue;
+      outcomes.set(key, { status: "settled" });
+      remaining.delete(key);
+    }
+  }
+  return { outcomes, remaining };
 }

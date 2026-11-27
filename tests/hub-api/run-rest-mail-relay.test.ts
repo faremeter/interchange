@@ -7,6 +7,10 @@ import {
   expect,
   test,
 } from "bun:test";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
 import { type } from "arktype";
 
 import {
@@ -26,9 +30,15 @@ import { workflowDefinition, workflowRunDispatch } from "@intx/db/schema";
 import { createApp, type GetSession } from "@intx/hub-api";
 import { deriveRunPrincipalId } from "@intx/hub-common";
 import {
+  createAgentRepoStore,
   createEventCollectorRegistry,
   createSidecarRouter,
   createWorkflowDispatchService,
+  dequeueToProcessing,
+  enqueueInbox,
+  markConsumed,
+  workflowRunRepoIdForAddress,
+  WORKFLOW_RUN_CLAIM_CHECK_REF,
   type AssetService,
   type RepoStore,
   type SessionService,
@@ -42,6 +52,7 @@ import {
   generateMessageId,
 } from "@intx/mime";
 import { base64Decode, base64Encode, hexEncode } from "@intx/types";
+import { deriveDeliveryKey } from "@intx/types/message-id";
 import type { KeyPair } from "@intx/types/runtime";
 import {
   createTestDb,
@@ -267,6 +278,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
     function makeApp(
       routed: Parameters<SidecarRouter["routeMail"]>[],
       workflowDispatchService?: WorkflowDispatchService,
+      repoStore: RepoStore = stubRepoStore(),
+      revisited: string[] = [],
     ) {
       const router = stubRouter();
       return createApp({
@@ -284,10 +297,19 @@ describe.skipIf(!harnessDbEnvAvailable())(
         sessionService: mockSessionService(),
         eventCollectors: createEventCollectorRegistry({ db: h.db }),
         assetService: stubAssetService(),
-        repoStore: stubRepoStore(),
+        repoStore,
         maxTarballBytes: 10_000_000,
         ...(workflowDispatchService !== undefined
-          ? { workflowDispatchService }
+          ? {
+              workflowDispatch: {
+                service: workflowDispatchService,
+                projection: {
+                  revisit: (anchorRunId: string) => {
+                    revisited.push(anchorRunId);
+                  },
+                },
+              },
+            }
           : {}),
       });
     }
@@ -367,8 +389,17 @@ describe.skipIf(!harnessDbEnvAvailable())(
         });
       });
 
+      const dataDirs: string[] = [];
+
       afterEach(async () => {
         await Promise.all(drains);
+        await Promise.all(
+          dataDirs
+            .splice(0)
+            .map((dir) =>
+              fs.promises.rm(dir, { recursive: true, force: true }),
+            ),
+        );
       });
 
       // The production dispatch service over the real stores. Its own enqueue
@@ -412,6 +443,31 @@ describe.skipIf(!harnessDbEnvAvailable())(
           .select({ messageId: workflowRunDispatch.messageId })
           .from(workflowRunDispatch)
           .where(eq(workflowRunDispatch.anchorRunId, TARGET));
+      }
+
+      // A repo store whose deployment took `messageId` into processing
+      // before the Hub queued a row for it, as mail a relay outside this
+      // route delivered.
+      async function storeHoldingInProcessing(messageId: string) {
+        const dataDir = await fs.promises.mkdtemp(
+          path.join(os.tmpdir(), "rest-mail-relayed-"),
+        );
+        dataDirs.push(dataDir);
+        const { repoStore } = createAgentRepoStore({
+          dataDir,
+          signingKey: await generateKeyPair(),
+        });
+        const repoId = workflowRunRepoIdForAddress(TARGET_ADDRESS);
+        const writer = { kind: "supervisor", anchorRunId: repoId.id } as const;
+        await repoStore.initRepo(repoId);
+        await enqueueInbox(repoStore, writer, repoId, {
+          address: TARGET_ADDRESS,
+          messageId,
+          authenticatedSender: SENDER_ADDRESS,
+          receivedAt: Date.now(),
+        });
+        await dequeueToProcessing(repoStore, writer, repoId, TARGET_ADDRESS);
+        return { repoStore, repoId, writer };
       }
 
       test("queues a re-sent Message-ID once, and refuses it with other bytes", async () => {
@@ -500,6 +556,135 @@ describe.skipIf(!harnessDbEnvAvailable())(
         await Promise.all(drains);
         expect(dispatched).toEqual([messageId, messageId]);
         expect(routed).toEqual([]);
+      });
+
+      test("queues mail it cannot check against Git, and hands its deployment to the dispatch projection", async () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the trigger reads only committed reads from the repo store
+        const unreadableEvents = new Proxy({} as RepoStore, {
+          get: (_target, prop) =>
+            prop === "openCommittedReads"
+              ? async (_principal: unknown, _repoId: unknown, ref: string) => {
+                  if (ref === WORKFLOW_RUN_CLAIM_CHECK_REF)
+                    throw new Error("events ref unreadable");
+                  return null;
+                }
+              : () => notImpl(`repoStore.${String(prop)}`),
+        });
+        const revisited: string[] = [];
+        const routed: Parameters<SidecarRouter["routeMail"]>[] = [];
+        const app = makeApp(
+          routed,
+          makeDispatchService(),
+          unreadableEvents,
+          revisited,
+        );
+        const messageId = `<unchecked-1@${DOMAIN}>`;
+
+        const res = await postMail(app, await signedMail(senderKey, messageId));
+        expect(res.status).toBe(202);
+
+        expect(await dispatchRows()).toEqual([{ messageId }]);
+        expect(revisited).toEqual([TARGET]);
+        await Promise.all(drains);
+      });
+
+      test("settles mail when it is queued if the deployment already consumed it", async () => {
+        const messageId = `<consumed-1@${DOMAIN}>`;
+        const { repoStore, repoId, writer } =
+          await storeHoldingInProcessing(messageId);
+        await markConsumed(repoStore, writer, repoId, {
+          address: TARGET_ADDRESS,
+          identity: await deriveDeliveryKey(SENDER_ADDRESS, messageId),
+          runId: TARGET,
+          consumedAt: Date.now(),
+          rejection: {
+            code: "malformed_mail",
+            message: "Missing MIME bytes",
+          },
+        });
+        const routed: Parameters<SidecarRouter["routeMail"]>[] = [];
+        const revisited: string[] = [];
+        const app = makeApp(
+          routed,
+          makeDispatchService(),
+          repoStore,
+          revisited,
+        );
+
+        const res = await postMail(app, await signedMail(senderKey, messageId));
+        expect(res.status).toBe(202);
+
+        expect(
+          await h.db
+            .select({
+              status: workflowRunDispatch.status,
+              failureCode: workflowRunDispatch.failureCode,
+            })
+            .from(workflowRunDispatch)
+            .where(eq(workflowRunDispatch.anchorRunId, TARGET)),
+        ).toEqual([{ status: "failed", failureCode: "malformed_mail" }]);
+        expect(revisited).toEqual([]);
+        await Promise.all(drains);
+        expect(dispatched).toEqual([]);
+      });
+
+      test("checks Git again when a repeated request finds its mail still queued", async () => {
+        const messageId = `<repeated-1@${DOMAIN}>`;
+        const { repoStore, repoId, writer } =
+          await storeHoldingInProcessing(messageId);
+        const app = makeApp([], makeDispatchService(), repoStore, []);
+        const mail = await signedMail(senderKey, messageId);
+        expect((await postMail(app, mail)).status).toBe(202);
+        await markConsumed(repoStore, writer, repoId, {
+          address: TARGET_ADDRESS,
+          identity: await deriveDeliveryKey(SENDER_ADDRESS, messageId),
+          runId: TARGET,
+          consumedAt: Date.now(),
+          rejection: {
+            code: "malformed_mail",
+            message: "Missing MIME bytes",
+          },
+        });
+
+        expect((await postMail(app, mail)).status).toBe(202);
+
+        expect(
+          await h.db
+            .select({
+              status: workflowRunDispatch.status,
+              failureCode: workflowRunDispatch.failureCode,
+            })
+            .from(workflowRunDispatch)
+            .where(eq(workflowRunDispatch.anchorRunId, TARGET)),
+        ).toEqual([{ status: "failed", failureCode: "malformed_mail" }]);
+        await Promise.all(drains);
+      });
+
+      test("hands mail its deployment holds in processing to the dispatch projection", async () => {
+        // A run log may already accept the mail, and no consumed record
+        // names it yet.
+        const messageId = `<processing-1@${DOMAIN}>`;
+        const { repoStore } = await storeHoldingInProcessing(messageId);
+        const routed: Parameters<SidecarRouter["routeMail"]>[] = [];
+        const revisited: string[] = [];
+        const app = makeApp(
+          routed,
+          makeDispatchService(),
+          repoStore,
+          revisited,
+        );
+
+        const res = await postMail(app, await signedMail(senderKey, messageId));
+        expect(res.status).toBe(202);
+        expect(revisited).toEqual([TARGET]);
+
+        const other = await postMail(
+          app,
+          await signedMail(senderKey, `<processing-2@${DOMAIN}>`),
+        );
+        expect(other.status).toBe(202);
+        expect(revisited).toEqual([TARGET]);
+        await Promise.all(drains);
       });
     });
   },

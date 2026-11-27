@@ -5,13 +5,17 @@ import path from "node:path";
 import git from "isomorphic-git";
 
 import {
+  RefNotDurableError,
   UncertainRefPublicationError,
   createIndexRollback,
+  syncRepositoryDurably,
+  writeRefDurably,
 } from "./commit-helpers";
 import { createIsogitStore } from "./node";
 import { createNodeIsogitRuntime } from "./node-runtime";
 import { withRepoDirLock } from "./repo-lock";
 import { normalizeRuntime } from "./runtime";
+import { recordingRuntime, treeOf } from "./sync.test-helpers";
 
 const tempDirs: string[] = [];
 
@@ -58,6 +62,12 @@ async function tempDir(): Promise<string> {
     path.join(os.tmpdir(), "index-rollback-"),
   );
   tempDirs.push(dir);
+  return dir;
+}
+
+async function initGitDir(): Promise<string> {
+  const dir = await tempDir();
+  await git.init({ fs, dir, defaultBranch: "main" });
   return dir;
 }
 
@@ -450,4 +460,133 @@ test("rollback reports a repair whose index read fails", async () => {
   }
   expect(repairing).toBe(true);
   expect(await fs.promises.readFile(indexPath)).toEqual(indexBefore);
+});
+
+// A ref write's temporary file has a random name.
+const withTempNamed = (steps: readonly string[]) =>
+  steps.map((step) => step.replace(/ref-write-\w+/, "ref-write-*"));
+
+test("a durable ref write syncs the value, renames it over the ref, and syncs the ref's directory", async () => {
+  const dir = await initGitDir();
+  const oid = "a".repeat(40);
+  const { runtime, steps } = recordingRuntime(dir);
+  await writeRefDurably(runtime, dir, "refs/heads/main", "d".repeat(40));
+  steps.length = 0;
+
+  await writeRefDurably(runtime, dir, "refs/heads/main", oid);
+
+  expect(withTempNamed(steps)).toEqual([
+    "sync .git/ref-write-*",
+    "rename .git/ref-write-* -> .git/refs/heads/main",
+    "sync .git/refs/heads",
+  ]);
+  expect(await git.resolveRef({ fs, dir, ref: "refs/heads/main" })).toBe(oid);
+  expect(
+    (await fs.promises.readdir(path.join(dir, ".git"))).filter((f) =>
+      f.startsWith("ref-write-"),
+    ),
+  ).toEqual([]);
+});
+
+test("a ref write that lands but cannot sync says so, and the ref names the new value", async () => {
+  const dir = await initGitDir();
+  const { runtime, failing } = recordingRuntime(dir);
+  await writeRefDurably(runtime, dir, "refs/heads/main", "d".repeat(40));
+  failing.sync = (p) => p === path.join(dir, ".git", "refs", "heads");
+
+  const write = writeRefDurably(
+    runtime,
+    dir,
+    "refs/heads/main",
+    "e".repeat(40),
+  );
+  await expect(write).rejects.toBeInstanceOf(RefNotDurableError);
+  await expect(write).rejects.toThrow("sync failed");
+  expect(await git.resolveRef({ fs, dir, ref: "refs/heads/main" })).toBe(
+    "e".repeat(40),
+  );
+});
+
+test("a durable ref write creates a missing ref directory and syncs it into its parent", async () => {
+  const dir = await initGitDir();
+  const { runtime, steps } = recordingRuntime(dir);
+
+  await writeRefDurably(runtime, dir, "refs/hub/runs/r1", "b".repeat(40));
+
+  expect(withTempNamed(steps)).toEqual([
+    "sync .git",
+    "sync .git/refs",
+    "sync .git/refs/hub",
+    "sync .git/ref-write-*",
+    "rename .git/ref-write-* -> .git/refs/hub/runs/r1",
+    "sync .git/refs/hub/runs",
+  ]);
+});
+
+test("a durable ref write syncs a ref directory a crashed write made into its parent", async () => {
+  const dir = await initGitDir();
+  // What a write that crashed before it synced its new directory leaves.
+  await fs.promises.mkdir(path.join(dir, ".git", "refs", "hub", "runs"), {
+    recursive: true,
+  });
+  const { runtime, steps } = recordingRuntime(dir);
+
+  await writeRefDurably(runtime, dir, "refs/hub/runs/r1", "b".repeat(40));
+
+  expect(withTempNamed(steps)).toEqual([
+    "sync .git",
+    "sync .git/refs",
+    "sync .git/refs/hub",
+    "sync .git/ref-write-*",
+    "rename .git/ref-write-* -> .git/refs/hub/runs/r1",
+    "sync .git/refs/hub/runs",
+  ]);
+});
+
+test("a repository sync syncs every file and directory of its git dir", async () => {
+  const dir = await initGitDir();
+  await fs.promises.writeFile(path.join(dir, "file.txt"), "content");
+  await git.add({ fs, dir, filepath: "file.txt" });
+  await git.commit({
+    fs,
+    dir,
+    message: "one",
+    author: { name: "Test", email: "test@test.dev" },
+  });
+  const { runtime, steps } = recordingRuntime(dir);
+
+  await syncRepositoryDurably(runtime, dir);
+
+  expect(steps.sort()).toEqual(
+    (await treeOf(dir, path.join(dir, ".git")))
+      .map((entry) => `sync ${entry}`)
+      .sort(),
+  );
+});
+
+test("a durable ref write refuses a name outside refs/, a name git rejects, and a value that is not an object id", async () => {
+  const dir = await initGitDir();
+  const { runtime } = recordingRuntime(dir);
+
+  await expect(
+    writeRefDurably(runtime, dir, "HEAD", "c".repeat(40)),
+  ).rejects.toThrow("is not a ref under refs/");
+  await expect(
+    writeRefDurably(runtime, dir, "refs/heads/../main", "c".repeat(40)),
+  ).rejects.toThrow("is not a ref under refs/");
+  for (const ref of [
+    "refs/heads/a..b",
+    "refs/heads/main.lock",
+    "refs/heads/.hidden",
+    "refs/heads/a b",
+    "refs/heads/a@{1}",
+    "refs/heads/a~1",
+  ]) {
+    await expect(
+      writeRefDurably(runtime, dir, ref, "c".repeat(40)),
+    ).rejects.toThrow("is not a valid ref name");
+  }
+  await expect(
+    writeRefDurably(runtime, dir, "refs/heads/main", "not-an-oid"),
+  ).rejects.toThrow("is not an object id");
 });

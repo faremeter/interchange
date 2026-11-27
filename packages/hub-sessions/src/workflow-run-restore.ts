@@ -4,6 +4,7 @@ import type { AgentRepoStore } from "./agent-repo";
 import type { RepoStore } from "./repo-store";
 import {
   workflowRunRepoIdForAddress,
+  WORKFLOW_RUN_CLAIM_CHECK_REF,
   WORKFLOW_RUN_REF,
 } from "./workflow-run-kind";
 import type {
@@ -13,10 +14,14 @@ import type {
 
 export const WORKFLOW_RUN_RESTORE_REFS = [
   WORKFLOW_RUN_REF,
-  "refs/heads/events",
+  WORKFLOW_RUN_CLAIM_CHECK_REF,
 ] as const;
 
-/** Read the Hub's tip of each authoritative ref of a deployment's history. */
+/**
+ * Read the Hub's tip of each authoritative ref of a deployment's history.
+ * They are read durably: the Hub confirms from them that it holds a
+ * worker's whole history, after which the worker may let its copy go.
+ */
 export async function readWorkflowRunRefTips(
   repoStore: Pick<RepoStore, "resolveRef">,
   agentAddress: string,
@@ -24,7 +29,9 @@ export async function readWorkflowRunRefTips(
   const repoId = workflowRunRepoIdForAddress(agentAddress);
   const tips: WorkflowRunRefTips = {};
   for (const ref of WORKFLOW_RUN_RESTORE_REFS)
-    tips[ref] = await repoStore.resolveRef({ kind: "hub" }, repoId, ref);
+    tips[ref] = await repoStore.resolveRef({ kind: "hub" }, repoId, ref, {
+      durable: true,
+    });
   return tips;
 }
 

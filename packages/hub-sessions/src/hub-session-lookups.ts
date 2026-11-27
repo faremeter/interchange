@@ -13,6 +13,7 @@ import {
   runPrincipalActiveKeySql,
   createSignalCorrelationStore,
   createWorkflowPendingProjectionStore,
+  createWorkflowRunDispatchStore,
   createWorkflowRunStore,
   expireApprovals,
   listUndecidedCorrelations,
@@ -35,6 +36,7 @@ import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
 import type { AgentRepoStore } from "./agent-repo";
 import { generateId } from "@intx/hub-common";
 import {
+  HeldCommitMovedOffError,
   RepoRemovedDuringReceiveError,
   type ApprovalWaitChange,
 } from "./repo-store";
@@ -42,8 +44,15 @@ import type {
   SidecarLookups,
   WorkflowRunPackSource,
 } from "./ws/sidecar-events";
-import { createWorkflowDispatchProjection } from "./workflow-dispatch-projection";
+import {
+  applyWorkflowDispatchEvidence,
+  closeSignalsToEndedRuns,
+} from "./workflow-dispatch-projection";
 import type { WorkflowHistoryReceiveTracker } from "./workflow-history-receives";
+import {
+  WORKFLOW_RUN_CLAIM_CHECK_REF,
+  WORKFLOW_RUN_REF,
+} from "./workflow-run-kind";
 import { readWorkflowRunRefTips } from "./workflow-run-restore";
 import { projectTerminalRun } from "./workflow-run-terminal-projection";
 
@@ -181,10 +190,7 @@ export function createHubSessionLookups(
   const approvalStore = createApprovalStore(db);
   const workflowRunStore = createWorkflowRunStore(db);
   const pendingProjections = createWorkflowPendingProjectionStore(db);
-  const dispatchProjection = createWorkflowDispatchProjection({
-    db,
-    repoStore: agentRepoStore.repoStore,
-  });
+  const dispatchStore = createWorkflowRunDispatchStore(db);
 
   return {
     readWorkflowRunRefTips(agentAddress) {
@@ -517,6 +523,7 @@ export function createHubSessionLookups(
         logger.warn`Workflow-run pack rejected for ${workflowRunRepoId}: source address has no live deployment anchor`;
         return { accepted: false, reason: "path_violation" as const };
       }
+      const anchorAddress = anchor.address;
       // An unlocked read, so a fenced or stale source is turned away
       // before it stages or validates anything. It decides nothing on its
       // own: the same check runs again under the allocation lock before
@@ -559,20 +566,19 @@ export function createHubSessionLookups(
         };
       }
       // The ref already holds this tip, so Git stays as it is. The receive
-      // that moved the ref to this tip runs both projections after its own
-      // ref write. When it fails after that write, recovery projects from
-      // Git.
+      // that moved the ref to this tip settles its runs, approvals and
+      // dispatches with its own ref write. When it fails after that write,
+      // recovery projects from Git.
       if (prepared.kind === "already_applied") return { accepted: true };
 
       // Recorded before Git can advance: Git acceptance and the projection
       // below are not atomic, and this row is the only durable trace of a
       // projection that fails after the ref moves. It is removed here only
-      // when the receive provably left Git unchanged or every run and
-      // approval reached a final decision; otherwise lifecycle recovery
+      // when the receive provably left Git unchanged or every run, approval
+      // and dispatch reached a final decision; otherwise lifecycle recovery
       // reconciles the deployment from Git and removes it.
       const pendingId = generateId("workflowPendingProjection");
       let newlyTerminalRuns;
-      let applied;
       let decided = true;
       let reachedGit = false;
       try {
@@ -650,25 +656,63 @@ export function createHubSessionLookups(
               logger.error`Approval update failed for deployment ${anchor.id}; its projection stays pending: ${msg}`;
             }
           }
-          return { committed, approvalsSettled } as const;
+          // Settled under the same lock as approvals, so mail queued after
+          // the lock is released finds the ref moved and checks Git itself.
+          // A failure keeps the pending row for lifecycle recovery. Each kind
+          // of evidence counts only on the ref recovery reads it from.
+          let dispatchesSettled = true;
+          if (committed.kind === "applied") {
+            const { consumed, accepted } = prepared.dispatchEvidence;
+            try {
+              await tx.transaction((savepoint) =>
+                applyWorkflowDispatchEvidence(
+                  dispatchStore,
+                  savepoint,
+                  { id: anchor.id, address: anchorAddress },
+                  {
+                    consumed:
+                      ref === WORKFLOW_RUN_CLAIM_CHECK_REF ? consumed : [],
+                    accepted: ref === WORKFLOW_RUN_REF ? accepted : [],
+                  },
+                  new Date(),
+                ),
+              );
+            } catch (err) {
+              dispatchesSettled = false;
+              const msg = err instanceof Error ? err.message : String(err);
+              logger.error`Dispatch settlement failed for deployment ${anchor.id}; its projection stays pending: ${msg}`;
+            }
+          }
+          return { committed, approvalsSettled, dispatchesSettled } as const;
         });
         if ("rejected" in received) {
           logger.warn`Workflow-run pack rejected for ${workflowRunRepoId}: ${received.rejected}`;
           return { accepted: false, reason: "path_violation" as const };
         }
         const { committed } = received;
-        applied = committed.kind === "applied";
-        decided = received.approvalsSettled;
+        decided = received.approvalsSettled && received.dispatchesSettled;
+        // The ref now reaches commits this receive did not validate, so
+        // their runs, approvals and dispatches are left to lifecycle
+        // recovery, which projects the deployment from the tips.
+        if (committed.kind === "applied" && committed.findingsPartial) {
+          decided = false;
+          logger.warn`Workflow-run pack for ${workflowRunRepoId} moved ${ref} onto commits the store held already; its projection stays pending`;
+        }
         newlyTerminalRuns =
           committed.kind === "applied" ? committed.newlyTerminalRuns : [];
       } catch (err) {
         // A receive that reached Git keeps its pending row: the ref may have
         // advanced before the failure, so only a Git read can prove nothing was
         // lost. One that failed earlier provably left Git unchanged, and so
-        // did a commit that found its repository removed: that check runs
-        // before the publish. A row kept for a removed repository would make
-        // recovery report lost history on every pass.
-        if (!reachedGit || err instanceof RepoRemovedDuringReceiveError)
+        // did a commit that found its repository removed, or the ref moved
+        // off the commit it held: those checks run before the ref moves. A
+        // row kept for a removed repository would make recovery report lost
+        // history on every pass.
+        if (
+          !reachedGit ||
+          err instanceof RepoRemovedDuringReceiveError ||
+          err instanceof HeldCommitMovedOffError
+        )
           await pendingProjections.close(pendingId).catch((cause: unknown) => {
             logger.warn`Cannot clear pending projection for ${anchor.id}: ${cause instanceof Error ? cause.message : String(cause)}`;
           });
@@ -678,9 +722,9 @@ export function createHubSessionLookups(
         };
       } finally {
         historyReceives.end(pendingId);
-        // A no-op after a publish. A failed removal leaves only a staging
-        // directory, which the next receive for this repository in a new
-        // Hub process removes, so it must not change the verdict.
+        // The prepare published the pack, so this only ends the receive,
+        // and does nothing once `commit()` ran; it must not change the
+        // verdict.
         await prepared.discard().catch((cause: unknown) => {
           logger.warn`Cannot discard the staged pack for ${workflowRunRepoId}: ${cause instanceof Error ? cause.message : String(cause)}`;
         });
@@ -696,6 +740,33 @@ export function createHubSessionLookups(
       // update is not retried here; the pending row stays and lifecycle
       // recovery projects the deployment from Git.
       //
+      // No signal can be queued for a run this push ended, and its log no
+      // longer changes, so its signals settle from Git after the lock is
+      // released. A plain read is enough: commit() returned only once its ref
+      // write was durable, and every later tip holds the same ended logs.
+      if (ref === WORKFLOW_RUN_REF && newlyTerminalRuns.length > 0) {
+        try {
+          const reads = await agentRepoStore.repoStore.openCommittedReads(
+            { kind: "hub" },
+            repoId,
+            ref,
+          );
+          if (reads === null)
+            throw new Error(`${ref} of ${workflowRunRepoId} is gone`);
+          await closeSignalsToEndedRuns(
+            dispatchStore,
+            db,
+            { id: anchor.id, address: anchorAddress },
+            new Set(newlyTerminalRuns.map((run) => run.runId)),
+            reads,
+            new Date(),
+          );
+        } catch (err) {
+          decided = false;
+          const msg = err instanceof Error ? err.message : String(err);
+          logger.error`Signals to runs that deployment ${anchor.id} ended failed to settle; its projection stays pending: ${msg}`;
+        }
+      }
       // A run's waits were settled before its end is. Its terminal event is
       // the last of its log, so every wait change the pack carries comes
       // first, and an approval the end expires is not opened again after it.
@@ -730,22 +801,6 @@ export function createHubSessionLookups(
           const msg = err instanceof Error ? err.message : String(err);
           logger.warn`Cannot clear pending projection for ${anchor.id}: ${msg}`;
         }
-      }
-
-      // The ref already held this tip, or another receive moved it to or past
-      // this tip while this one validated, so the ref did not move here; this
-      // receive at most restored objects the store had lost. The receive that
-      // moved the ref runs the dispatch projection after its own ref write,
-      // and the periodic dispatch projection pass retries any anchor that
-      // still has unsettled dispatches.
-      if (!applied) return { accepted: true };
-
-      // Git acceptance survives projection failures. The terminal recovery pass
-      // retries these outcomes even after the allocation has been released.
-      try {
-        await dispatchProjection.project(anchor.id);
-      } catch (error) {
-        logger.error`Workflow dispatch settlement failed for ${anchor.id}: ${error instanceof Error ? error.message : String(error)}`;
       }
 
       return { accepted: true };

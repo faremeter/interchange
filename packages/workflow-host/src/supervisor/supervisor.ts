@@ -1920,11 +1920,7 @@ export function createWorkflowSupervisor(
       },
     );
     legMarkEnd(messageId, "enqueue");
-    // Only a fresh enqueue added a new inbox entry; wake the dispatch loop for
-    // it alone. An `already-present` outcome landed nothing new -- returning
-    // (which acks) without waking is correct, since the earlier delivery of
-    // the same message already drives dispatch. This resolves for both
-    // outcomes: both mean the bytes are durably accounted for, so both ack.
+    // Both outcomes mean the bytes are durably accounted for, so both ack.
     if (outcome.outcome === "enqueued") {
       // Eager-commit the fresh message into the per-run mailbox and notify the
       // child BEFORE waking dispatch, so the warm agent's mail_wait can observe
@@ -1938,11 +1934,16 @@ export function createWorkflowSupervisor(
       wakeDispatch();
       return true;
     }
-    // A redelivery of a message already durably present: the ack still fires
-    // (it is on disk), but no new run is dispatched. Surface it so an
-    // at-least-once redelivery being made effectively-once is observable.
-    logger.info`inbound mail ${messageId} already durably present (${outcome.reason}); acknowledging without re-dispatch`;
-    return outcome.reason === "duplicate" || outcome.reason === "already_inbox";
+    // A redelivery of a message already durably present acks without a new
+    // entry. Surface it so an at-least-once redelivery being made
+    // effectively-once is observable.
+    logger.info`inbound mail ${messageId} already durably present (${outcome.reason}); acknowledging without enqueuing it again`;
+    const inInbox =
+      outcome.reason === "duplicate" || outcome.reason === "already_inbox";
+    // The earlier delivery can have landed the entry and then failed before
+    // it woke dispatch, as one whose ref cannot be synced does.
+    if (inInbox) wakeDispatch();
+    return inInbox;
   }
 
   /**

@@ -23,6 +23,7 @@ import type { KeyPair } from "@intx/types/runtime";
 import type { DB } from "@intx/db";
 import {
   createSidecarAllocationStore,
+  createWorkflowPendingProjectionStore,
   createWorkflowRunDispatchStore,
   createWorkflowRunStore,
 } from "@intx/db";
@@ -46,8 +47,12 @@ import {
   enqueueInbox,
   dequeueToProcessing,
   markConsumed,
+  readConsumedWorkflowDispatches,
+  settleQueuedMailFromGit,
   WORKFLOW_RUN_ADDRESSES_PREFIX,
+  WORKFLOW_RUN_CLAIM_CHECK_REF,
   WORKFLOW_RUN_INBOX_DIR,
+  type AgentRepoStore,
   type RepoStore,
 } from "@intx/hub-sessions";
 import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
@@ -66,7 +71,10 @@ import {
 } from "@intx/test-harness/seed";
 
 import { applyWorkflowRunPack } from "../hub-agent/lib/deploy-flow-env";
-import { NO_STANDBY_ROUTER } from "./sidecar-test-helpers";
+import {
+  NO_STANDBY_ROUTER,
+  NO_DISPATCH_RECOVERY,
+} from "./sidecar-test-helpers";
 import {
   buildWorkflowRunLine,
   type WorkflowRunPackRun,
@@ -205,6 +213,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       pack: Uint8Array,
       tip: string,
       repoStore?: ReturnType<typeof createAgentRepoStore>,
+      ref = WFR_REF,
     ): Promise<{ accepted: true } | { accepted: false; reason: string }> {
       repoStore ??= createAgentRepoStore({
         dataDir: await makeTempDir("wfr-terminal-data-"),
@@ -222,7 +231,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       return lookups.receiveWorkflowRunPack(
         { kind: "workflow-run", id: DEPLOYMENT_REPO_ID },
         pack,
-        WFR_REF,
+        ref,
         tip,
         {
           kind: "allocated",
@@ -434,6 +443,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         },
         db: h.db,
         historyReceives: createWorkflowHistoryReceiveTracker(),
+        dispatchProjection: NO_DISPATCH_RECOVERY,
         now: () => current,
         runReader: {
           listRunIds: async () => [DEPLOYMENT],
@@ -898,7 +908,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           db: h.db,
           repoStore: store.repoStore,
         });
-        await projection.reconcileNext();
+        await projection.project(DEPLOYMENT);
         expect(await dispatches.findById(rejected.id)).toMatchObject({
           status: "failed",
           failureCode: "malformed_mail",
@@ -1163,6 +1173,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           },
           db: h.db,
           historyReceives: createWorkflowHistoryReceiveTracker(),
+          dispatchProjection: NO_DISPATCH_RECOVERY,
           runReader: createWorkflowRunReader(store.repoStore),
           cancelGraceMs: 0,
           sendControl: async (_target, command) => {
@@ -1194,7 +1205,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           },
         });
         if (order === "before") await stop();
-        const projecting = projection.reconcileNext();
+        const projecting = projection.project(DEPLOYMENT);
         try {
           if (order === "during") {
             await Promise.race([reading.promise, projecting]);
@@ -1247,7 +1258,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       },
     );
 
-    test("recovery resumes after a database failure partway through delivery updates", async () => {
+    test("recovery resumes after a database failure in its delivery updates", async () => {
       const dispatches = createWorkflowRunDispatchStore(h.db);
       const ids = new Map<string, string>();
       for (const messageId of ["first-accepted", "second-accepted"]) {
@@ -1294,10 +1305,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
         for each row execute function reject_second_settlement()`);
       try {
         await expect(projection.project(DEPLOYMENT)).rejects.toThrow();
+        // The settlements go in one statement, so the failure writes none.
         expect(
           (await dispatches.findById(namedDispatchId(ids, "first-accepted")))
             ?.status,
-        ).toBe("settled");
+        ).toBe("pending");
         expect(
           (await dispatches.findById(namedDispatchId(ids, "second-accepted")))
             ?.status,
@@ -1307,7 +1319,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           sql`drop trigger reject_second_settlement on workflow_run_dispatch`,
         );
       }
-      await projection.reconcileNext();
+      await projection.project(DEPLOYMENT);
       expect(
         (await dispatches.findById(namedDispatchId(ids, "first-accepted")))
           ?.status,
@@ -1316,6 +1328,1060 @@ describe.skipIf(!harnessDbEnvAvailable())(
         (await dispatches.findById(namedDispatchId(ids, "second-accepted")))
           ?.status,
       ).toBe("settled");
+    });
+
+    describe("dispatches a receive brings the evidence of", () => {
+      const repoId = { kind: "workflow-run", id: DEPLOYMENT_REPO_ID } as const;
+      const writer = {
+        kind: "supervisor",
+        anchorRunId: DEPLOYMENT_REPO_ID,
+      } as const;
+      const dispatches = () => createWorkflowRunDispatchStore(h.db);
+
+      async function enqueueMail(messageId: string, senderAddress: string) {
+        return (
+          await dispatches().enqueue({
+            anchorRunId: DEPLOYMENT,
+            messageId,
+            senderAddress,
+            rawMessage: new TextEncoder().encode(messageId),
+            stepGrants: [],
+          })
+        ).dispatch;
+      }
+
+      async function enqueueSignalTo(runId: string, signalId: string) {
+        return (
+          await dispatches().enqueueSignal({
+            anchorRunId: DEPLOYMENT,
+            signal: {
+              agentAddress: DEPLOYMENT_ADDRESS,
+              runId,
+              signalName: "continue",
+              signalId,
+              payload: null,
+            },
+          })
+        ).dispatch;
+      }
+
+      // Reject the mail with `messageId` from `sender` on the events ref
+      // of `store`, received and consumed at `at`.
+      async function consumeRejected(
+        store: RepoStore,
+        messageId: string,
+        sender: string,
+        at: number,
+        retentionHorizonMs?: number,
+      ) {
+        await enqueueInbox(store, writer, repoId, {
+          address: DEPLOYMENT_ADDRESS,
+          messageId,
+          authenticatedSender: sender,
+          receivedAt: at,
+        });
+        await dequeueToProcessing(store, writer, repoId, DEPLOYMENT_ADDRESS);
+        await markConsumed(store, writer, repoId, {
+          address: DEPLOYMENT_ADDRESS,
+          identity: await deriveDeliveryKey(sender, messageId),
+          runId: DEPLOYMENT,
+          consumedAt: at,
+          rejection: { code: "malformed_mail", message: "Missing MIME bytes" },
+          ...(retentionHorizonMs === undefined ? {} : { retentionHorizonMs }),
+        });
+      }
+
+      // Run `body` while every update that resolves a dispatch fails.
+      async function rejectSettlement(body: () => Promise<void>) {
+        await h.db
+          .execute(sql`create or replace function reject_dispatch_settlement() returns trigger language plpgsql as $$
+          begin
+            if new.status is distinct from old.status then
+              raise exception 'injected settlement failure';
+            end if;
+            return new;
+          end
+        $$`);
+        await h.db
+          .execute(sql`create trigger reject_dispatch_settlement before update on workflow_run_dispatch
+          for each row execute function reject_dispatch_settlement()`);
+        try {
+          await body();
+        } finally {
+          await h.db.execute(
+            sql`drop trigger reject_dispatch_settlement on workflow_run_dispatch`,
+          );
+        }
+      }
+
+      function recoveringLifecycle(
+        repoStore: AgentRepoStore["repoStore"],
+        dispatchProjection = createWorkflowDispatchProjection({
+          db: h.db,
+          repoStore,
+        }),
+      ) {
+        return createWorkflowLifecycleService({
+          standbyRouter: NO_STANDBY_ROUTER,
+          retentionRouter: {
+            fenceAllocation: () => undefined,
+            retireAllocation: () => undefined,
+            getRetentionCandidates: () => [],
+            holdsAllocatedBinding: () => true,
+            getAllocationRetention: () => "kept",
+            retainAllocation: async () => "kept",
+          },
+          db: h.db,
+          historyReceives: createWorkflowHistoryReceiveTracker(),
+          dispatchProjection,
+          runReader: createWorkflowRunReader(repoStore),
+        });
+      }
+
+      test("a receive settles mail and signals from the events its pack adds", async () => {
+        const mail = await enqueueMail("mail-1", "sender@example.test");
+        const signal = await enqueueSignalTo("run-child", "sig-1");
+        const { pack, tip } = await buildPack([
+          { runId: DEPLOYMENT, consumedDeliveryKey: mail.deliveryKey },
+          { runId: "run-child", signalId: "sig-1" },
+        ]);
+
+        expect(await receiveWith(h.db, pack, tip)).toEqual({ accepted: true });
+
+        expect((await dispatches().findById(mail.id))?.status).toBe("settled");
+        expect((await dispatches().findById(signal.id))?.status).toBe(
+          "settled",
+        );
+      });
+
+      test("a receive takes run events only from main and consumed records only from events", async () => {
+        const mail = await enqueueMail("mail-1", "sender@example.test");
+        const signal = await enqueueSignalTo("run-child", "sig-1");
+        const ending = await enqueueSignalTo("run-ended", "sig-2");
+        const runs = await buildPack([
+          { runId: DEPLOYMENT, consumedDeliveryKey: mail.deliveryKey },
+          { runId: "run-child", signalId: "sig-1" },
+          { runId: "run-ended", terminalType: "RunCompleted" },
+        ]);
+        expect(
+          await receiveWith(
+            h.db,
+            runs.pack,
+            runs.tip,
+            undefined,
+            WORKFLOW_RUN_CLAIM_CHECK_REF,
+          ),
+        ).toEqual({ accepted: true });
+
+        const rejected = await enqueueMail("mail-a", "a@example.test");
+        const records = await packThatRejects();
+        expect(
+          await receiveWith(h.db, records.pack, records.commitSha),
+        ).toEqual({ accepted: true });
+
+        for (const dispatch of [mail, signal, ending, rejected]) {
+          expect((await dispatches().findById(dispatch.id))?.status).toBe(
+            "pending",
+          );
+        }
+      });
+
+      test("a consumed record settles its mail even when a run log cannot be read", async () => {
+        const store = createAgentRepoStore({
+          dataDir: await makeTempDir("dispatch-record-first-"),
+          signingKey,
+        });
+        await store.repoStore.initRepo(repoId);
+        await recordMailRejection(
+          store.repoStore,
+          "mail-1",
+          "sender@example.test",
+        );
+        // An event an older store accepted without checking it, written
+        // straight into the repository.
+        const dir = store.repoStore.getRepoDir(repoId);
+        const events = path.join("runs", DEPLOYMENT, "events");
+        await fs.promises.mkdir(path.join(dir, events), { recursive: true });
+        const files = {
+          "0.json": JSON.stringify({ seq: 0, type: "RunStarted" }),
+          "1.json": JSON.stringify({
+            seq: 1,
+            type: "SignalReceived",
+            signalName: "continue",
+            signalId: 7,
+          }),
+        };
+        for (const [name, body] of Object.entries(files)) {
+          await fs.promises.writeFile(path.join(dir, events, name), body);
+          await git.add({ fs, dir, filepath: path.join(events, name) });
+        }
+        await git.commit({
+          fs,
+          dir,
+          ref: WFR_REF,
+          message: "older store",
+          author: { name: "older", email: "older@example.test" },
+        });
+        const mail = await enqueueMail("mail-1", "sender@example.test");
+        const signal = await enqueueSignalTo(DEPLOYMENT, "sig-open");
+
+        await expect(
+          createWorkflowDispatchProjection({
+            db: h.db,
+            repoStore: store.repoStore,
+          }).project(DEPLOYMENT),
+        ).rejects.toThrow("workflow_dispatch_signal_invalid");
+
+        expect(await dispatches().findById(mail.id)).toMatchObject({
+          status: "failed",
+          failureCode: "malformed_mail",
+        });
+        expect((await dispatches().findById(signal.id))?.status).toBe(
+          "pending",
+        );
+      });
+
+      test("a consumed record settles its mail even when the run history cannot be opened", async () => {
+        const store = createAgentRepoStore({
+          dataDir: await makeTempDir("dispatch-record-unopened-"),
+          signingKey,
+        });
+        await store.repoStore.initRepo(repoId);
+        await recordMailRejection(
+          store.repoStore,
+          "mail-1",
+          "sender@example.test",
+        );
+        const mail = await enqueueMail("mail-1", "sender@example.test");
+
+        await expect(
+          createWorkflowDispatchProjection({
+            db: h.db,
+            repoStore: {
+              openCommittedReads: async (principal, id, ref) => {
+                if (ref === WFR_REF) throw new Error("run history unreadable");
+                return store.repoStore.openCommittedReads(principal, id, ref);
+              },
+            },
+          }).project(DEPLOYMENT),
+        ).rejects.toThrow("run history unreadable");
+
+        expect(await dispatches().findById(mail.id)).toMatchObject({
+          status: "failed",
+          failureCode: "malformed_mail",
+        });
+      });
+
+      test("a receive fails a signal to a run its pack ends", async () => {
+        const signal = await enqueueSignalTo("run-child", "sig-late");
+        const { pack, tip } = await buildPack([
+          { runId: "run-child", terminalType: "RunCompleted" },
+        ]);
+
+        expect(await receiveWith(h.db, pack, tip)).toEqual({ accepted: true });
+
+        expect(await dispatches().findById(signal.id)).toMatchObject({
+          status: "failed",
+          failureCode: "workflow_run_terminal",
+        });
+      });
+
+      test("a receive decides a signal to a run its pack ends from the run's whole log", async () => {
+        const line = await buildWorkflowRunLine(
+          await makeTempDir("dispatch-ended-log-"),
+          WFR_REF,
+          [
+            [{ runId: "run-child", signalId: "sig-1" }],
+            [
+              {
+                runId: "run-child",
+                signalId: "sig-1",
+                terminalType: "RunCompleted",
+              },
+            ],
+          ],
+        );
+        const [received, ended] = line.commits;
+        if (received === undefined || ended === undefined) {
+          throw new Error("buildWorkflowRunLine");
+        }
+        const repoStore = createAgentRepoStore({
+          dataDir: await makeTempDir("dispatch-ended-log-data-"),
+          signingKey,
+        });
+        expect(
+          await receiveWith(
+            h.db,
+            await line.packAt(received),
+            received,
+            repoStore,
+          ),
+        ).toEqual({ accepted: true });
+        // Evidence reaches Git with its row unsettled when the Hub stops
+        // between a ref move and its commit. A row queued after its
+        // evidence stands in for that here.
+        const signal = await enqueueSignalTo("run-child", "sig-1");
+
+        expect(
+          await receiveWith(h.db, await line.packAt(ended), ended, repoStore),
+        ).toEqual({ accepted: true });
+
+        expect((await dispatches().findById(signal.id))?.status).toBe(
+          "settled",
+        );
+        // The second pack builds on the tip, so it validated everything
+        // the ref now reaches and leaves nothing to recovery.
+        expect(
+          await createWorkflowPendingProjectionStore(h.db).hasAny(DEPLOYMENT),
+        ).toBe(false);
+      });
+
+      // A pack that consumes mail-a with a rejection, then prunes mail-a's
+      // record with a later consume whose watermark passes it.
+      async function packThatPrunesARejection() {
+        const source = createAgentRepoStore({
+          dataDir: await makeTempDir("dispatch-prune-src-"),
+          signingKey,
+        });
+        await source.repoStore.initRepo(repoId);
+        await consumeRejected(
+          source.repoStore,
+          "mail-a",
+          "a@example.test",
+          1_000,
+        );
+        await consumeRejected(
+          source.repoStore,
+          "mail-z",
+          "z@example.test",
+          5_000,
+          1_000,
+        );
+        const events = await source.repoStore.openCommittedReads(
+          { kind: "hub" },
+          repoId,
+          WORKFLOW_RUN_CLAIM_CHECK_REF,
+        );
+        if (events === null) throw new Error("events ref");
+        expect(
+          await readConsumedWorkflowDispatches(
+            events,
+            DEPLOYMENT_ADDRESS,
+            new Set([await deriveDeliveryKey("a@example.test", "mail-a")]),
+          ),
+        ).toEqual([]);
+        return source.repoStore.createPack(
+          { kind: "hub" },
+          repoId,
+          WORKFLOW_RUN_CLAIM_CHECK_REF,
+        );
+      }
+
+      // A pack that consumes mail-a with a rejection and keeps its record.
+      async function packThatRejects() {
+        const source = createAgentRepoStore({
+          dataDir: await makeTempDir("dispatch-reject-src-"),
+          signingKey,
+        });
+        await source.repoStore.initRepo(repoId);
+        await consumeRejected(
+          source.repoStore,
+          "mail-a",
+          "a@example.test",
+          1_000,
+        );
+        return source.repoStore.createPack(
+          { kind: "hub" },
+          repoId,
+          WORKFLOW_RUN_CLAIM_CHECK_REF,
+        );
+      }
+
+      test("a receive whose dispatches cannot settle leaves them to recovery", async () => {
+        const mail = await enqueueMail("mail-a", "a@example.test");
+        const { pack, commitSha } = await packThatRejects();
+        const repoStore = createAgentRepoStore({
+          dataDir: await makeTempDir("dispatch-settle-failed-"),
+          signingKey,
+        });
+        await rejectSettlement(async () => {
+          expect(
+            await receiveWith(
+              h.db,
+              pack,
+              commitSha,
+              repoStore,
+              WORKFLOW_RUN_CLAIM_CHECK_REF,
+            ),
+          ).toEqual({ accepted: true });
+        });
+        expect((await dispatches().findById(mail.id))?.status).toBe("pending");
+        expect(
+          await createWorkflowPendingProjectionStore(h.db).hasAny(DEPLOYMENT),
+        ).toBe(true);
+
+        expect(
+          await recoveringLifecycle(repoStore.repoStore).releaseCapacity(
+            TENANT,
+            DEPLOYMENT,
+          ),
+        ).toBe("live");
+
+        expect(await dispatches().findById(mail.id)).toMatchObject({
+          status: "failed",
+          failureCode: "malformed_mail",
+        });
+        expect(
+          await createWorkflowPendingProjectionStore(h.db).hasAny(DEPLOYMENT),
+        ).toBe(false);
+      });
+
+      test("a receive that moves a ref onto commits the store held already leaves their dispatches to recovery", async () => {
+        const mail = await enqueueMail("mail-a", "a@example.test");
+        const { pack, commitSha } = await packThatRejects();
+        const repoStore = createAgentRepoStore({
+          dataDir: await makeTempDir("dispatch-known-commits-"),
+          signingKey,
+        });
+        // On main the record is not evidence, so the mail stays pending,
+        // and the commit is in the store when the events ref moves to it.
+        expect(
+          await receiveWith(h.db, pack, commitSha, repoStore, WFR_REF),
+        ).toEqual({ accepted: true });
+        expect(
+          await receiveWith(
+            h.db,
+            pack,
+            commitSha,
+            repoStore,
+            WORKFLOW_RUN_CLAIM_CHECK_REF,
+          ),
+        ).toEqual({ accepted: true });
+        expect((await dispatches().findById(mail.id))?.status).toBe("pending");
+        expect(
+          await createWorkflowPendingProjectionStore(h.db).hasAny(DEPLOYMENT),
+        ).toBe(true);
+
+        expect(
+          await recoveringLifecycle(repoStore.repoStore).releaseCapacity(
+            TENANT,
+            DEPLOYMENT,
+          ),
+        ).toBe("live");
+
+        expect(await dispatches().findById(mail.id)).toMatchObject({
+          status: "failed",
+          failureCode: "malformed_mail",
+        });
+        expect(
+          await createWorkflowPendingProjectionStore(h.db).hasAny(DEPLOYMENT),
+        ).toBe(false);
+      });
+
+      test("a receive whose transaction fails after Git moved leaves its dispatches to recovery", async () => {
+        const mail = await enqueueMail("mail-a", "a@example.test");
+        const { pack, commitSha } = await packThatRejects();
+        const real = createAgentRepoStore({
+          dataDir: await makeTempDir("dispatch-commit-failed-"),
+          signingKey,
+        });
+        const failing: AgentRepoStore = {
+          ...real,
+          prepareWorkflowRunPack: async (...args) => {
+            const prepared = await real.prepareWorkflowRunPack(...args);
+            if (prepared.kind !== "prepared") return prepared;
+            return {
+              ...prepared,
+              commit: async () => {
+                await prepared.commit();
+                throw new Error("database commit failed");
+              },
+            };
+          },
+        };
+
+        expect(
+          await receiveWith(
+            h.db,
+            pack,
+            commitSha,
+            failing,
+            WORKFLOW_RUN_CLAIM_CHECK_REF,
+          ),
+        ).toEqual({ accepted: false, reason: "corrupt" });
+        expect(
+          await real.repoStore.resolveRef(
+            { kind: "hub" },
+            repoId,
+            WORKFLOW_RUN_CLAIM_CHECK_REF,
+          ),
+        ).toBe(commitSha);
+        expect((await dispatches().findById(mail.id))?.status).toBe("pending");
+
+        expect(
+          await recoveringLifecycle(real.repoStore).releaseCapacity(
+            TENANT,
+            DEPLOYMENT,
+          ),
+        ).toBe("live");
+
+        expect(await dispatches().findById(mail.id)).toMatchObject({
+          status: "failed",
+          failureCode: "malformed_mail",
+        });
+      });
+
+      test("a recovery whose dispatch projection fails still clears its row, and the pass retries the dispatches", async () => {
+        const repoStore = createAgentRepoStore({
+          dataDir: await makeTempDir("dispatch-recover-failed-"),
+          signingKey,
+        });
+        let historyUnreadable = true;
+        const projection = createWorkflowDispatchProjection({
+          db: h.db,
+          repoStore: {
+            async openCommittedReads(...args) {
+              if (historyUnreadable) throw new Error("history unreadable");
+              return repoStore.repoStore.openCommittedReads(...args);
+            },
+          },
+        });
+        // The first pass reads which live deployments to visit before this
+        // one has a dispatch, so only the failed recovery has it visited.
+        await projection.reconcileNext();
+        const mail = await enqueueMail("mail-a", "a@example.test");
+        const { pack, commitSha } = await packThatRejects();
+        await rejectSettlement(async () => {
+          expect(
+            await receiveWith(
+              h.db,
+              pack,
+              commitSha,
+              repoStore,
+              WORKFLOW_RUN_CLAIM_CHECK_REF,
+            ),
+          ).toEqual({ accepted: true });
+        });
+
+        expect(
+          await recoveringLifecycle(
+            repoStore.repoStore,
+            projection,
+          ).releaseCapacity(TENANT, DEPLOYMENT),
+        ).toBe("live");
+        expect(
+          await createWorkflowPendingProjectionStore(h.db).hasAny(DEPLOYMENT),
+        ).toBe(false);
+        expect((await dispatches().findById(mail.id))?.status).toBe("pending");
+
+        historyUnreadable = false;
+        await projection.reconcileNext();
+        expect(await dispatches().findById(mail.id)).toMatchObject({
+          status: "failed",
+          failureCode: "malformed_mail",
+        });
+      });
+
+      test("a receive whose signals to ended runs cannot settle leaves them to recovery", async () => {
+        const signal = await enqueueSignalTo("run-child", "sig-late");
+        const { pack, tip } = await buildPack([
+          { runId: "run-child", terminalType: "RunCompleted" },
+        ]);
+        const repoStore = createAgentRepoStore({
+          dataDir: await makeTempDir("dispatch-close-failed-"),
+          signingKey,
+        });
+        await rejectSettlement(async () => {
+          expect(await receiveWith(h.db, pack, tip, repoStore)).toEqual({
+            accepted: true,
+          });
+        });
+        expect((await dispatches().findById(signal.id))?.status).toBe(
+          "pending",
+        );
+        expect(
+          await createWorkflowPendingProjectionStore(h.db).hasAny(DEPLOYMENT),
+        ).toBe(true);
+
+        expect(
+          await recoveringLifecycle(repoStore.repoStore).releaseCapacity(
+            TENANT,
+            DEPLOYMENT,
+          ),
+        ).toBe("live");
+
+        expect(await dispatches().findById(signal.id)).toMatchObject({
+          status: "failed",
+          failureCode: "workflow_run_terminal",
+        });
+        expect(
+          await createWorkflowPendingProjectionStore(h.db).hasAny(DEPLOYMENT),
+        ).toBe(false);
+      });
+
+      test("mail queued while a receive moves the ref is out of reach of that push's evidence, and settles from Git once queued", async () => {
+        const { pack, commitSha } = await packThatRejects();
+        const real = createAgentRepoStore({
+          dataDir: await makeTempDir("dispatch-queued-during-"),
+          signingKey,
+        });
+        const moved = Promise.withResolvers<undefined>();
+        const resume = Promise.withResolvers<undefined>();
+        const pausing: AgentRepoStore = {
+          ...real,
+          prepareWorkflowRunPack: async (...args) => {
+            const prepared = await real.prepareWorkflowRunPack(...args);
+            if (prepared.kind !== "prepared") return prepared;
+            return {
+              ...prepared,
+              commit: async () => {
+                const committed = await prepared.commit();
+                moved.resolve(undefined);
+                await resume.promise;
+                return committed;
+              },
+            };
+          },
+        };
+        const receiving = receiveWith(
+          h.db,
+          pack,
+          commitSha,
+          pausing,
+          WORKFLOW_RUN_CLAIM_CHECK_REF,
+        );
+        await moved.promise;
+        // The same sender and Message-ID as the record the pack brings, queued
+        // the way a trigger queues it: under the deployment's allocation lock.
+        const queuePid = Promise.withResolvers<number>();
+        const queueing = h.db.transaction(async (tx) => {
+          const [backend] = await tx.execute(
+            sql`select pg_backend_pid() as pid`,
+          );
+          queuePid.resolve(Number(backend?.["pid"]));
+          await tx
+            .select({ id: sidecarAllocation.id })
+            .from(sidecarAllocation)
+            .where(eq(sidecarAllocation.anchorRunId, DEPLOYMENT))
+            .for("update");
+          return (
+            await dispatches().enqueue(
+              {
+                anchorRunId: DEPLOYMENT,
+                messageId: "mail-a",
+                senderAddress: "a@example.test",
+                rawMessage: new TextEncoder().encode("mail-a"),
+                stepGrants: [],
+              },
+              tx,
+            )
+          ).dispatch;
+        });
+        // No signal says the queueing transaction waits on the receive's lock.
+        const pid = await queuePid.promise;
+        while (
+          (
+            await h.db.execute(
+              sql`select 1 from pg_stat_activity where pid = ${pid} and wait_event_type = 'Lock'`,
+            )
+          ).length === 0
+        ) {
+          await new Promise((res) => setTimeout(res, 12));
+        }
+        resume.resolve(undefined);
+
+        expect(await receiving).toEqual({ accepted: true });
+        const fresh = await queueing;
+        expect((await dispatches().findById(fresh.id))?.status).toBe("pending");
+
+        // What the trigger does once its enqueue commits.
+        await settleQueuedMailFromGit(
+          real.repoStore,
+          dispatches(),
+          h.db,
+          { id: DEPLOYMENT, address: DEPLOYMENT_ADDRESS },
+          fresh,
+          new Date(),
+        );
+        expect(await dispatches().findById(fresh.id)).toMatchObject({
+          status: "failed",
+          failureCode: "malformed_mail",
+        });
+      });
+
+      test("a receive leaves a rejection that a later commit of its pack prunes", async () => {
+        // Once pruned, the entry's sender and Message-ID are free for new
+        // mail, so it cannot tell which delivery it settles.
+        const mail = await enqueueMail("mail-a", "a@example.test");
+        const { pack, commitSha } = await packThatPrunesARejection();
+
+        expect(
+          await receiveWith(
+            h.db,
+            pack,
+            commitSha,
+            undefined,
+            WORKFLOW_RUN_CLAIM_CHECK_REF,
+          ),
+        ).toEqual({ accepted: true });
+
+        expect((await dispatches().findById(mail.id))?.status).toBe("pending");
+      });
+
+      test("the first background pass after a start settles a live deployment's dispatch that has no pending row", async () => {
+        const store = createAgentRepoStore({
+          dataDir: await makeTempDir("dispatch-first-pass-"),
+          signingKey,
+        });
+        await store.repoStore.initRepo(repoId);
+        const sender = "sender@example.test";
+        await recordMailRejection(store.repoStore, "stranded", sender);
+        await recordMailRejection(store.repoStore, "later", sender);
+        const stranded = await enqueueMail("stranded", sender);
+        const projection = createWorkflowDispatchProjection({
+          db: h.db,
+          repoStore: store.repoStore,
+        });
+
+        await projection.reconcileNext();
+        expect(await dispatches().findById(stranded.id)).toMatchObject({
+          status: "failed",
+          failureCode: "malformed_mail",
+        });
+
+        // Later passes leave a live deployment to its receives.
+        const later = await enqueueMail("later", sender);
+        await projection.reconcileNext();
+        expect((await dispatches().findById(later.id))?.status).toBe("pending");
+      });
+
+      test("a live deployment whose first-pass visit fails is visited again until a visit succeeds", async () => {
+        const store = createAgentRepoStore({
+          dataDir: await makeTempDir("dispatch-first-pass-retry-"),
+          signingKey,
+        });
+        await store.repoStore.initRepo(repoId);
+        await recordMailRejection(
+          store.repoStore,
+          "stranded",
+          "sender@example.test",
+        );
+        const stranded = await enqueueMail("stranded", "sender@example.test");
+        let failRead = true;
+        const projection = createWorkflowDispatchProjection({
+          db: h.db,
+          repoStore: {
+            async openCommittedReads(...args) {
+              if (failRead) throw new Error("history temporarily unreadable");
+              return store.repoStore.openCommittedReads(...args);
+            },
+          },
+        });
+
+        await projection.reconcileNext();
+        expect((await dispatches().findById(stranded.id))?.status).toBe(
+          "pending",
+        );
+        failRead = false;
+        await projection.reconcileNext();
+        expect(await dispatches().findById(stranded.id)).toMatchObject({
+          status: "failed",
+          failureCode: "malformed_mail",
+        });
+      });
+
+      test("a live deployment that holds a pending row at the first pass is visited once the row clears", async () => {
+        const store = createAgentRepoStore({
+          dataDir: await makeTempDir("dispatch-first-pass-pending-"),
+          signingKey,
+        });
+        await store.repoStore.initRepo(repoId);
+        await recordMailRejection(
+          store.repoStore,
+          "stranded",
+          "sender@example.test",
+        );
+        const stranded = await enqueueMail("stranded", "sender@example.test");
+        const pending = createWorkflowPendingProjectionStore(h.db);
+        await pending.open("receive-in-flight", DEPLOYMENT);
+        const projection = createWorkflowDispatchProjection({
+          db: h.db,
+          repoStore: store.repoStore,
+        });
+
+        await projection.reconcileNext();
+        expect((await dispatches().findById(stranded.id))?.status).toBe(
+          "pending",
+        );
+        await pending.close("receive-in-flight");
+        await projection.reconcileNext();
+        expect(await dispatches().findById(stranded.id)).toMatchObject({
+          status: "failed",
+          failureCode: "malformed_mail",
+        });
+      });
+
+      test("a deployment the projection is told to revisit is visited until a visit succeeds", async () => {
+        const store = createAgentRepoStore({
+          dataDir: await makeTempDir("dispatch-revisit-"),
+          signingKey,
+        });
+        await store.repoStore.initRepo(repoId);
+        const projection = createWorkflowDispatchProjection({
+          db: h.db,
+          repoStore: store.repoStore,
+        });
+        await projection.reconcileNext();
+        await recordMailRejection(
+          store.repoStore,
+          "unchecked",
+          "sender@example.test",
+        );
+        const unchecked = await enqueueMail("unchecked", "sender@example.test");
+        await projection.reconcileNext();
+        expect((await dispatches().findById(unchecked.id))?.status).toBe(
+          "pending",
+        );
+
+        projection.revisit(DEPLOYMENT);
+        await projection.reconcileNext();
+
+        expect(await dispatches().findById(unchecked.id)).toMatchObject({
+          status: "failed",
+          failureCode: "malformed_mail",
+        });
+      });
+
+      test("a revisit asked for while its deployment is visited is still made", async () => {
+        const store = createAgentRepoStore({
+          dataDir: await makeTempDir("dispatch-revisit-during-"),
+          signingKey,
+        });
+        await store.repoStore.initRepo(repoId);
+        await enqueueMail("in-flight", "sender@example.test");
+        let visits = 0;
+        let gate: PromiseWithResolvers<undefined> | null =
+          Promise.withResolvers();
+        const reading = Promise.withResolvers<undefined>();
+        const projection = createWorkflowDispatchProjection({
+          db: h.db,
+          repoStore: {
+            async openCommittedReads(...args) {
+              if (args[2] === WFR_REF) {
+                visits += 1;
+                reading.resolve(undefined);
+                if (gate !== null) await gate.promise;
+              }
+              return store.repoStore.openCommittedReads(...args);
+            },
+          },
+        });
+
+        const visiting = projection.reconcileNext();
+        await reading.promise;
+        projection.revisit(DEPLOYMENT);
+        gate.resolve(undefined);
+        gate = null;
+        await visiting;
+        expect(visits).toBe(1);
+
+        await projection.reconcileNext();
+        expect(visits).toBe(2);
+        await projection.reconcileNext();
+        expect(visits).toBe(2);
+      });
+
+      test("a revisit asked for after a pass dropped its deployment survives the visit in flight", async () => {
+        const store = createAgentRepoStore({
+          dataDir: await makeTempDir("dispatch-revisit-dropped-"),
+          signingKey,
+        });
+        await store.repoStore.initRepo(repoId);
+        const first = await enqueueMail("first", "sender@example.test");
+        let visits = 0;
+        let gate: PromiseWithResolvers<undefined> | null =
+          Promise.withResolvers();
+        const reading = Promise.withResolvers<undefined>();
+        const projection = createWorkflowDispatchProjection({
+          db: h.db,
+          repoStore: {
+            async openCommittedReads(...args) {
+              if (args[2] === WFR_REF) {
+                visits += 1;
+                reading.resolve(undefined);
+                if (gate !== null) await gate.promise;
+              }
+              return store.repoStore.openCommittedReads(...args);
+            },
+          },
+        });
+
+        const visiting = projection.reconcileNext();
+        await reading.promise;
+        // The row settles some other way, so the next pass drops the
+        // deployment, and then a new request names it again.
+        await dispatches().settle(DEPLOYMENT, first.deliveryKey);
+        await projection.reconcileNext();
+        await enqueueMail("second", "sender@example.test");
+        projection.revisit(DEPLOYMENT);
+        gate.resolve(undefined);
+        gate = null;
+        await visiting;
+        expect(visits).toBe(1);
+
+        await projection.reconcileNext();
+        expect(visits).toBe(2);
+      });
+
+      test("a deployment asked to be revisited with nothing unresolved is dropped", async () => {
+        const store = createAgentRepoStore({
+          dataDir: await makeTempDir("dispatch-revisit-resolved-"),
+          signingKey,
+        });
+        await store.repoStore.initRepo(repoId);
+        const projection = createWorkflowDispatchProjection({
+          db: h.db,
+          repoStore: store.repoStore,
+        });
+        projection.revisit(DEPLOYMENT);
+        await projection.reconcileNext();
+
+        await recordMailRejection(
+          store.repoStore,
+          "later",
+          "sender@example.test",
+        );
+        const later = await enqueueMail("later", "sender@example.test");
+        await projection.reconcileNext();
+
+        expect((await dispatches().findById(later.id))?.status).toBe("pending");
+      });
+
+      test("deployments a pending row holds back do not starve the visits after them", async () => {
+        const store = createAgentRepoStore({
+          dataDir: await makeTempDir("dispatch-visit-rotate-"),
+          signingKey,
+        });
+        await store.repoStore.initRepo(repoId);
+        const projection = createWorkflowDispatchProjection({
+          db: h.db,
+          repoStore: store.repoStore,
+          maxVisitBatch: 1,
+        });
+        await projection.reconcileNext();
+        const blocked = "run-dispatch-blocked";
+        await seedWorkflowRun(h.db, {
+          id: blocked,
+          anchorRunId: blocked,
+          tenantId: TENANT,
+          address: `run_${blocked}@tnt.example`,
+        });
+        await dispatches().enqueue({
+          anchorRunId: blocked,
+          messageId: "held",
+          senderAddress: "sender@example.test",
+          rawMessage: new TextEncoder().encode("held"),
+          stepGrants: [],
+        });
+        await createWorkflowPendingProjectionStore(h.db).open(
+          "receive-held",
+          blocked,
+        );
+        await recordMailRejection(
+          store.repoStore,
+          "waiting",
+          "sender@example.test",
+        );
+        const waiting = await enqueueMail("waiting", "sender@example.test");
+        projection.revisit(blocked);
+        projection.revisit(DEPLOYMENT);
+
+        await projection.reconcileNext();
+        await projection.reconcileNext();
+
+        expect(await dispatches().findById(waiting.id)).toMatchObject({
+          status: "failed",
+          failureCode: "malformed_mail",
+        });
+      });
+
+      // What they record in SQL must outlive a crash that rolls back a ref
+      // whose sync failed.
+      test("a check of queued mail and a projection pin the refs they read durably", async () => {
+        const store = createAgentRepoStore({
+          dataDir: await makeTempDir("dispatch-sync-first-"),
+          signingKey,
+        });
+        await store.repoStore.initRepo(repoId);
+        await recordMailRejection(
+          store.repoStore,
+          "relayed",
+          "sender@example.test",
+        );
+        const pins: string[] = [];
+        const recording = {
+          async openCommittedReads(
+            ...args: Parameters<RepoStore["openCommittedReads"]>
+          ) {
+            const [, , ref, opts] = args;
+            pins.push(`${ref} ${opts?.durable === true ? "durable" : "plain"}`);
+            return store.repoStore.openCommittedReads(...args);
+          },
+        };
+
+        const queued = await enqueueMail("relayed", "sender@example.test");
+        await settleQueuedMailFromGit(
+          recording,
+          dispatches(),
+          h.db,
+          { id: DEPLOYMENT, address: DEPLOYMENT_ADDRESS },
+          queued,
+          new Date(),
+        );
+        expect(pins).toEqual([`${WORKFLOW_RUN_CLAIM_CHECK_REF} durable`]);
+        expect((await dispatches().findById(queued.id))?.status).toBe("failed");
+
+        pins.length = 0;
+        await enqueueMail("unconsumed", "sender@example.test");
+        await createWorkflowDispatchProjection({
+          db: h.db,
+          repoStore: recording,
+        }).project(DEPLOYMENT);
+        expect(pins).toEqual([
+          `${WFR_REF} durable`,
+          `${WORKFLOW_RUN_CLAIM_CHECK_REF} durable`,
+        ]);
+      });
+
+      test("mail queued after its consumed record is in Git settles when it is queued", async () => {
+        const store = createAgentRepoStore({
+          dataDir: await makeTempDir("dispatch-queued-late-"),
+          signingKey,
+        });
+        await store.repoStore.initRepo(repoId);
+        await recordMailRejection(
+          store.repoStore,
+          "relayed",
+          "sender@example.test",
+        );
+        await recordMailRejection(store.repoStore, "legacy", null);
+
+        for (const messageId of ["relayed", "legacy"]) {
+          const queued = await enqueueMail(messageId, "sender@example.test");
+          await settleQueuedMailFromGit(
+            store.repoStore,
+            dispatches(),
+            h.db,
+            { id: DEPLOYMENT, address: DEPLOYMENT_ADDRESS },
+            queued,
+            new Date(),
+          );
+          expect(await dispatches().findById(queued.id)).toMatchObject({
+            status: "failed",
+            failureCode: "malformed_mail",
+          });
+        }
+      });
     });
 
     describe("evidence for mail that shares a Message-ID across senders", () => {
@@ -1458,6 +2524,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
           tenantId: TENANT,
           address: `${id}@tnt.example`,
         });
+        // Only a deployment that ended is the background pass's work.
+        await h.db
+          .update(workflowRun)
+          .set({ status: "completed" })
+          .where(eq(workflowRun.id, id));
         await dispatches.enqueue({
           anchorRunId: id,
           messageId: id,
@@ -1518,6 +2589,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
           stepGrants: [],
         });
       }
+      // Only a deployment that ended is the background pass's work.
+      await h.db.update(workflowRun).set({ status: "completed" });
       const projection = createWorkflowDispatchProjection({
         db: h.db,
         maxConcurrentProjections: 2,
@@ -1628,6 +2701,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           },
           db: h.db,
           historyReceives: createWorkflowHistoryReceiveTracker(),
+          dispatchProjection: NO_DISPATCH_RECOVERY,
           runReader: {
             listRunIds: async () => [],
             readRunEvents: async () => {
@@ -2061,6 +3135,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         },
         db: h.db,
         historyReceives: createWorkflowHistoryReceiveTracker(),
+        dispatchProjection: NO_DISPATCH_RECOVERY,
         runReader: createWorkflowRunReader(repoStore.repoStore),
       });
       expect(await lifecycle.releaseCapacity(TENANT, DEPLOYMENT)).toBe("live");

@@ -68,6 +68,7 @@ function preparedWith(
 ): PrepareWorkflowRunPack {
   return async () => ({
     kind: "prepared",
+    dispatchEvidence: { consumed: [], accepted: [] },
     commit,
     discard: () => Promise.resolve(),
   });
@@ -75,6 +76,7 @@ function preparedWith(
 
 const appliedNothing: PackCommitResult = {
   kind: "applied",
+  findingsPartial: false,
   newlyTerminalRuns: [],
   approvalWaitChanges: [],
 };
@@ -235,6 +237,26 @@ describe.skipIf(!harnessDbEnvAvailable())(
       return entries.filter((entry) => entry.endsWith(".pack")).sort();
     }
 
+    async function holdsLoose(
+      agentRepoStore: AgentRepoStore,
+      oid: string,
+    ): Promise<boolean> {
+      return fs.promises
+        .access(
+          path.join(
+            repoDirOf(agentRepoStore),
+            ".git",
+            "objects",
+            oid.slice(0, 2),
+            oid.slice(2),
+          ),
+        )
+        .then(
+          () => true,
+          () => false,
+        );
+    }
+
     async function stagedEntries(
       agentRepoStore: AgentRepoStore,
     ): Promise<string[]> {
@@ -302,6 +324,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           if (prepared.kind !== "prepared") return prepared;
           return {
             kind: "prepared",
+            dispatchEvidence: prepared.dispatchEvidence,
             commit: async () => {
               const result = await prepared.commit();
               commits.push(result);
@@ -580,7 +603,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(await pendingRows()).toEqual([]);
     });
 
-    test("a release while a pack validates rejects the pack and leaves nothing staged or published", async () => {
+    test("a release while a pack validates rejects the pack, moves no ref and leaves nothing staged", async () => {
       const line = await runLine([[{ runId: "run-a" }], [{ runId: "run-b" }]]);
       const seeded = commitAt(line, 0);
       const tip = commitAt(line, 1);
@@ -602,7 +625,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         RUN_EVENTS_REF,
         seeded,
       );
-      const packsBefore = await publishedPacks(agentRepoStore);
       // The seed went through the same wrapper; only the receive's own
       // commit counts below.
       commits.splice(0);
@@ -624,7 +646,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
       expect(commits).toEqual([]);
       expect(await refTip(agentRepoStore)).toBe(seeded);
-      expect(await publishedPacks(agentRepoStore)).toEqual(packsBefore);
       expect(await stagedEntries(agentRepoStore)).toEqual([]);
       expect(await pendingRows()).toEqual([]);
     });
@@ -823,7 +844,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
     }
 
-    test("a DB commit failure after the ref moved keeps the pack and the pending projection", async () => {
+    test("a DB commit failure after the ref moved keeps the pack's objects and the pending projection", async () => {
       const line = await runLine([[{ runId: "run-a" }]]);
       const tip = commitAt(line, 0);
       const agentRepoStore = await createRepoStore(
@@ -833,6 +854,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             if (prepared.kind !== "prepared") return prepared;
             return {
               kind: "prepared",
+              dispatchEvidence: prepared.dispatchEvidence,
               commit: async () => {
                 await prepared.commit();
                 throw new Error("database commit failed");
@@ -846,7 +868,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
         await receivePack(createLookups(agentRepoStore), await pushOf(line, 0)),
       ).toEqual({ accepted: false, reason: "corrupt" });
       expect(await refTip(agentRepoStore)).toBe(tip);
-      expect(await publishedPacks(agentRepoStore)).toHaveLength(1);
+      expect(await publishedPacks(agentRepoStore)).toEqual([]);
+      expect(await holdsLoose(agentRepoStore, tip)).toBe(true);
       expect(await stagedEntries(agentRepoStore)).toEqual([]);
       expect(await pendingRows()).toEqual([{ anchorRunId: ANCHOR_RUN_ID }]);
     });
@@ -898,6 +921,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             if (prepared.kind !== "prepared") return prepared;
             return {
               kind: "prepared",
+              dispatchEvidence: prepared.dispatchEvidence,
               commit: prepared.commit,
               discard: async () => {
                 discards += 1;

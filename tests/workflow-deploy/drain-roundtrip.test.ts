@@ -695,6 +695,7 @@ test.skipIf(!harnessDbEnvAvailable())(
       retentionRouter: env.hub.router,
       runReader: createWorkflowRunReader(env.hub.agentRepoStore.repoStore),
       historyReceives: createWorkflowHistoryReceiveTracker(),
+      dispatchProjection: { recover: async () => undefined },
       sendControl: (control, command, timeoutMs) =>
         env.hub.router.sendWorkflowControl(control, command, timeoutMs),
       standbyRouter: env.hub.router,

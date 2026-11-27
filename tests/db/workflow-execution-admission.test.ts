@@ -37,7 +37,11 @@ import {
   DEFAULT_SIDECAR_CAPACITY,
   HubFrame,
 } from "@intx/types/sidecar";
-import { createMockWs, NO_STANDBY_ROUTER } from "./sidecar-test-helpers";
+import {
+  createMockWs,
+  NO_STANDBY_ROUTER,
+  NO_DISPATCH_RECOVERY,
+} from "./sidecar-test-helpers";
 
 const MANIFEST_DIGEST = "1".repeat(64);
 
@@ -202,6 +206,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             },
             db: h.db,
             historyReceives: createWorkflowHistoryReceiveTracker(),
+            dispatchProjection: NO_DISPATCH_RECOVERY,
             runReader: {
               listRunIds: async () => [],
               readRunEvents: async () => [],
@@ -323,6 +328,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           },
           db: h.db,
           historyReceives: createWorkflowHistoryReceiveTracker(),
+          dispatchProjection: NO_DISPATCH_RECOVERY,
           runReader: {
             listRunIds: async () => [],
             readRunEvents: async () => [],
@@ -475,6 +481,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           },
           db: h.db,
           historyReceives: createWorkflowHistoryReceiveTracker(),
+          dispatchProjection: NO_DISPATCH_RECOVERY,
           runReader: {
             listRunIds: async () => [],
             readRunEvents: async () => [],

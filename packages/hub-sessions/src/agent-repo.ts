@@ -21,20 +21,23 @@ import {
 
 export type AgentRepoStore = {
   /**
-   * Stage and validate a workflow-run pack from a sidecar, and return the
-   * prepared receive. The validation holds no repo lock, so a caller can
-   * take a lock of its own around `commit()` alone. `commit()` takes the
-   * repo lock, publishes the pack, and moves the ref without materializing
-   * a working tree.
+   * Stage, validate and publish a workflow-run pack from a sidecar, and
+   * return the prepared receive. The validation holds no repo lock, and
+   * the publish writes and syncs the pack's objects before prepare
+   * returns, so a failed write rejects the prepare and a caller can take
+   * a lock of its own around `commit()` alone. `commit()` takes the repo
+   * lock and decides whether to move the ref, without materializing a
+   * working tree.
    *
    * The sidecar's pushes can land out of order, so a pack whose tip the
    * ref already holds (its tip or a first-parent ancestor) moves no ref:
    * prepare or `commit()` answers `already_applied`, and the ref keeps
-   * the newer tip. When the store lost objects of that tip, such a pack
-   * must bring them, or it is rejected as `missing_objects`, and
-   * `commit()` publishes them. Any other pack goes through the usual
-   * receive checks, and one on a new line of history is not rejected for
-   * that.
+   * the newer tip. On a ref no receive has checked whole, or for an older
+   * commit the ref holds, such a pack must bring any object the store
+   * lost, or it is rejected as `missing_objects`, and prepare publishes
+   * them; a checked ref's own tip needs nothing. Any other pack goes
+   * through the usual receive checks and must build on the ref's tip at
+   * prepare, since a workflow-run history only grows.
    *
    * `repoId.kind` must be `"workflow-run"`. Stamps a
    * `WorkflowRunSupervisorPrincipal` whose `anchorRunId` equals
