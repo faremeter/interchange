@@ -34,11 +34,9 @@
 // Scope boundary: the guard matches the launcher forms the repo uses, not
 // every conceivable one. A `bun` invocation behind an env-assignment,
 // `command`, or `time` prefix is not matched; a line invoking bun on more
-// than one `.ts` guards only the first; and `importsIntx` relies on the
-// TypeScript pre-processor, which surfaces every import/re-export form in
-// use here except `export * as ns from "@intx/..."`. Each is a deliberate
-// false-negative for a form no launcher uses — widening to cover them would
-// reimplement shell and module parsing. Prose commands in docs are likewise
+// than one `.ts` guards only the first. These are deliberate
+// false-negatives for forms no launcher uses -- widening to cover them would
+// reimplement shell parsing. Prose commands in docs are likewise
 // out of scope.
 //
 // `checkLaunchers` runs the scans and is exported for tests, along with the
@@ -47,7 +45,8 @@
 
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import ts from "typescript";
+
+import { collectModuleSpecifiers } from "./lib/module-specifiers";
 
 const FLAG = "--conditions=intx-src";
 
@@ -64,11 +63,11 @@ const BUN_INVOCATION = /(?:^\s*|[;&|(]\s*|\bexec\s+)bun\b/;
 const HAS_FLAG = /--conditions[= ](?:[\w.-]+,)*intx-src(?:,[\w.-]+)*(?![\w.-])/;
 
 /** True when a TypeScript source imports any `@intx/*` package directly.
- *  Imports are extracted with the TypeScript pre-processor, so an `@intx`
+ *  Imports are extracted from the syntax tree, so an `@intx`
  *  mention inside a string or comment is not counted. */
-export function importsIntx(code: string): boolean {
-  for (const imported of ts.preProcessFile(code, true, true).importedFiles) {
-    if (imported.fileName === "@intx" || imported.fileName.startsWith("@intx/"))
+export function importsIntx(code: string, fileName: string): boolean {
+  for (const imported of collectModuleSpecifiers(code, fileName, "auto")) {
+    if (imported.text === "@intx" || imported.text.startsWith("@intx/"))
       return true;
   }
   return false;
@@ -112,12 +111,12 @@ export function bunTsTarget(line: string, wrapperRel: string): string | null {
 export function shadowingImports(
   code: string,
   wrapperNames: Set<string>,
+  fileName: string,
 ): string[] {
   const hits: string[] = [];
-  for (const imported of ts.preProcessFile(code, true, true).importedFiles) {
-    const name = imported.fileName.match(/^\.\/([\w.-]+)$/)?.[1];
-    if (name !== undefined && wrapperNames.has(name))
-      hits.push(imported.fileName);
+  for (const imported of collectModuleSpecifiers(code, fileName, "auto")) {
+    const name = imported.text.match(/^\.\/([\w.-]+)$/)?.[1];
+    if (name !== undefined && wrapperNames.has(name)) hits.push(imported.text);
   }
   return hits;
 }
@@ -216,7 +215,7 @@ export function checkLaunchers(repoRoot: string): LauncherReport {
           `check-launchers: ${rel} runs bun on ${candidate.target}, which does not exist`,
         );
       }
-      if (!importsIntx(readFileSync(targetAbs, "utf8"))) continue;
+      if (!importsIntx(readFileSync(targetAbs, "utf8"), targetAbs)) continue;
       guardedCount += 1;
       if (!candidate.hasFlag) {
         violations.push(
@@ -239,6 +238,7 @@ export function checkLaunchers(repoRoot: string): LauncherReport {
     for (const spec of shadowingImports(
       readFileSync(abs, "utf8"),
       wrapperNames,
+      abs,
     )) {
       const name = spec.slice(2);
       violations.push(
@@ -264,7 +264,7 @@ export function checkLaunchers(repoRoot: string): LauncherReport {
     const shebang = nl === -1 ? text : text.slice(0, nl);
     if (!/^#!.*\bbun\b/.test(shebang)) continue;
     launcherCount += 1;
-    if (!importsIntx(text)) continue;
+    if (!importsIntx(text, `${rel}.ts`)) continue;
     guardedCount += 1;
     if (!HAS_FLAG.test(shebang)) {
       violations.push(
@@ -298,7 +298,7 @@ export function checkLaunchers(repoRoot: string): LauncherReport {
       if (target === null) continue;
       const targetAbs = join(repoRoot, pkgDir, target);
       if (!existsSync(targetAbs)) continue;
-      if (!importsIntx(readFileSync(targetAbs, "utf8"))) continue;
+      if (!importsIntx(readFileSync(targetAbs, "utf8"), targetAbs)) continue;
       guardedCount += 1;
       if (!HAS_FLAG.test(cmd)) {
         violations.push(

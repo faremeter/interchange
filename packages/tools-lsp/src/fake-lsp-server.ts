@@ -15,10 +15,12 @@ const connection = createMessageConnection(
 );
 
 let initialized = false;
+let initializationOptions: unknown;
 
 const openDocuments = new Map<string, { version: number; text: string }>();
 
-connection.onRequest("initialize", (_params: Record<string, unknown>) => {
+connection.onRequest("initialize", (params: Record<string, unknown>) => {
+  initializationOptions = params["initializationOptions"];
   return {
     capabilities: {
       textDocumentSync: 1,
@@ -34,11 +36,9 @@ connection.onNotification("initialized", () => {
   initialized = true;
 });
 
-connection.onNotification(
-  "workspace/didChangeConfiguration",
-  (_params: { settings: unknown }) => {
-    // Accept configuration silently.
-  },
+connection.onRequest(
+  "test/initializationOptions",
+  () => initializationOptions ?? null,
 );
 
 connection.onNotification(

@@ -163,7 +163,7 @@ describe("createLSPClient", () => {
     expect(exitCode).toBe(0);
   });
 
-  test("initialization with config sends didChangeConfiguration", async () => {
+  test("server startup options are sent in the initialize request", async () => {
     const proc = spawnFakeServer();
     const client = await createLSPClient({
       serverID: "test",
@@ -175,8 +175,11 @@ describe("createLSPClient", () => {
     });
     clients.push(client);
 
-    // If the fake server did not crash, initialization was accepted
-    expect(client.serverID).toBe("test");
+    expect(
+      await client.connection.sendRequest<unknown>(
+        "test/initializationOptions",
+      ),
+    ).toEqual({ tsserver: { path: "/usr/bin/tsserver" } });
   });
 
   test("seeded diagnostics do not trigger listener on first publish", async () => {

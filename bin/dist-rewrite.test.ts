@@ -130,6 +130,32 @@ test("multiple specifiers on one line are each rewritten", () => {
   );
 });
 
+test("rewriting uses character offsets and preserves unrelated declaration text", () => {
+  const source = `// 非 ASCII: \u{1d400}
+declare module "./ambient" { export type T = import("./types").T; }
+export * as ns from './module';
+`;
+  expect(rewriteSpecifiers(source, "source.d.ts", appendJs)).toBe(
+    `// 非 ASCII: \u{1d400}
+declare module "./ambient" { export type T = import("./types.js").T; }
+export * as ns from './module.js';
+`,
+  );
+});
+
+test("rewritten specifiers stay escaped for their quote style", () => {
+  const source =
+    "await import(`./literal-\\${name}`);\nawait import('./it\\'s');\n";
+  expect(rewriteSpecifiers(source, "source.js", appendJs)).toBe(
+    "await import(`./literal-\\${name}.js`);\nawait import('./it\\'s.js');\n",
+  );
+});
+
+test("commonjs require paths are scanned but not rewritten as ESM imports", () => {
+  const source = 'const value = require("./module");\n';
+  expect(rewriteSpecifiers(source, "source.cjs", appendJs)).toBe(source);
+});
+
 // --- tree walker against a real emitted tree ---
 
 const roots: string[] = [];
